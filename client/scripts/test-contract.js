@@ -2,14 +2,12 @@
 
 const { Encoding, fromUtf8 } = require("@iov/encoding");
 const { coin } = require("@cosmjs/sdk38");
-const http = require('http');
+const { getValidators, getDelegationShares } = require('../src/staking');
 
 /* eslint-disable @typescript-eslint/camelcase */
 const { EnigmaUtils, Secp256k1Pen, SigningCosmWasmClient, pubkeyToAddress, encodeSecp256k1Pubkey } = require("secretjs");
 const fs = require("fs");
-const { Console } = require("console");
 require("dotenv").config();
-
 const httpUrl = process.env.SECRET_REST_URL;
 
 const account = {
@@ -42,24 +40,10 @@ async function main() {
 
   let validator;
 
-  // query the validators
-  http.get(httpUrl + '/staking/validators', (resp) => {
-    let data = '';
-
-    resp.on('data', (chunk) => {
-      data += chunk;
-    });
-
-    resp.on('end', () => {
-      // use the first validator
-      validator = JSON.parse(data).result[0].operator_address;
-      console.log("Validator: ", validator);
-    });
-
-  }).on("error", (err) => {
-    console.log("Error querying validators: " + err.message);
-    process.exit(0)
-  });
+  // query the validators and take the first 
+  const validators = await getValidators();
+  validator = validators[0].operator_address;
+  console.log("Validator: ", validator);
 
   const signingPen = await Secp256k1Pen.fromMnemonic(account.mnemonic);
   const myWalletAddress = pubkeyToAddress(
@@ -101,9 +85,9 @@ async function main() {
     "config": {
       "public_total_supply":true,
       "enable_deposit":true,
-      "enable_redeem":true,
+      "enable_redeem":false,
       "enable_mint":true,
-      "enable_burn":true,
+      "enable_burn":false,
       "validator": validator
     }
   }
@@ -118,7 +102,12 @@ async function main() {
 
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
   console.log("token_info: ", result)
-//  deposit stake
+
+  // query delegations
+  const startDelegations = await getDelegationShares(stakingInit.contractAddress)
+  console.log("Delegation shares: ", startDelegations);
+
+  //  deposit stake
   const amount = 1000000
   const denom = "uscrt";
   const stake = [coin(amount, denom)];
@@ -129,11 +118,11 @@ async function main() {
   }, "", stake);
   console.log("Deposit result: ", JSON.parse(fromUtf8(result.data)))
 
-  // result = await client.execute(stakingInit.contractAddress, { query_balances: {  } });
-  // console.log("Balances:", result)
-
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
-  console.log("token_info: ", result)
+  console.log("token_info: ", result);
+
+  const delegationShares = await getDelegationShares(stakingInit.contractAddress)
+  console.log("Delegation shares: ", delegationShares);
 }
 
 main().then(

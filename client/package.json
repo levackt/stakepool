@@ -16,6 +16,7 @@
     "bignumber.js": "^9.0.0",
     "cosmos-lib": "^1.1.0",
     "dotenv": "^8.2.0",
+    "node-fetch": "^2.6.1",
     "react": "16.13.1",
     "react-dom": "16.13.1",
     "react-number-format": "^4.4.1",
