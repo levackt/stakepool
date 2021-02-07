@@ -20,7 +20,7 @@ use crate::state::{
 };
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
-use crate::staking::{stake};
+use crate::staking::{stake, withdraw_to_self};
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
@@ -231,6 +231,9 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::AddMinters { minters, .. } => add_minters(deps, env, minters),
         HandleMsg::RemoveMinters { minters, .. } => remove_minters(deps, env, minters),
         HandleMsg::SetMinters { minters, .. } => set_minters(deps, env, minters),
+
+        // ClaimRewards
+        HandleMsg::ClaimRewards { } => claim_rewards(deps, env),
     };
 
     pad_response(response)
@@ -538,6 +541,30 @@ fn set_contract_status<S: Storage, A: Api, Q: Querier>(
             status: Success,
         })?),
     })
+}
+
+fn claim_rewards<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+) -> StdResult<HandleResponse> {
+    let mut config = Config::from_storage(&mut deps.storage);
+
+    check_if_admin(&config, &env.message.sender)?;
+
+    let mut validator_set = get_validator_set(&deps.storage)?;
+    let validator = validator_set.get_validator_address().unwrap();
+
+    let mut messages: Vec<CosmosMsg> = vec![];
+
+    messages.push(withdraw_to_self(&validator));
+
+    let res = HandleResponse {
+        messages,
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::ClaimRewards { status: Success })?),
+    };
+
+    Ok(res)
 }
 
 pub fn try_check_allowance<S: Storage, A: Api, Q: Querier>(

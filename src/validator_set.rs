@@ -86,6 +86,16 @@ impl ValidatorSet {
     pub fn exists(&self, address: &String) -> Option<usize> {
         self.validators.iter().position(|v| &v.address == address)
     }
+
+    pub fn get_validator_address(&mut self) -> Option<&String> {
+        if self.validators.is_empty() {
+            return None
+        }
+
+        // testing 1 validator
+        let val = self.validators.front_mut().unwrap();
+        Some(&val.address)
+    }
 }
 
 /// todo: validator address is a String till we test with HumanAddr and see that secretval addresses are working

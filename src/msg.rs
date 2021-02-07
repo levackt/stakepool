@@ -196,6 +196,8 @@ pub enum HandleMsg {
         level: ContractStatusLevel,
         padding: Option<String>,
     },
+    ClaimRewards {
+    },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -271,6 +273,9 @@ pub enum HandleAnswer {
     SetContractStatus {
         status: ResponseStatus,
     },
+    ClaimRewards {
+        status: ResponseStatus,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

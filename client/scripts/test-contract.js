@@ -3,38 +3,13 @@
 const { Encoding, fromUtf8 } = require("@iov/encoding");
 const { coin } = require("@cosmjs/sdk38");
 const { getValidators, getDelegationShares } = require('../src/staking');
+const { getSigningClient } = require('../src/secret');
 
 /* eslint-disable @typescript-eslint/camelcase */
-const { EnigmaUtils, Secp256k1Pen, SigningCosmWasmClient, pubkeyToAddress, encodeSecp256k1Pubkey } = require("secretjs");
 const fs = require("fs");
 require("dotenv").config();
-const httpUrl = process.env.SECRET_REST_URL;
-
-const account = {
-  mnemonic:
-  process.env.MNEMONIC,
-  address: process.env.ADDRESS,
-};
-
-const customFees = {
-  upload: {
-    amount: [{ amount: "2000000", denom: "uscrt" }],
-    gas: "3000000",
-  },
-  init: {
-    amount: [{ amount: "500000", denom: "uscrt" }],
-    gas: "500000",
-  },
-  exec: {
-    amount: [{ amount: "500000", denom: "uscrt" }],
-    gas: "500000",
-  },
-  send: {
-    amount: [{ amount: "80000", denom: "uscrt" }],
-    gas: "80000",
-  },
-}
-
+const { promisify } = require('util')
+const sleep = promisify(setTimeout)
 
 async function main() {
 
@@ -45,28 +20,11 @@ async function main() {
   validator = validators[0].operator_address;
   console.log("Validator: ", validator);
 
-  const signingPen = await Secp256k1Pen.fromMnemonic(account.mnemonic);
-  const myWalletAddress = pubkeyToAddress(
-    encodeSecp256k1Pubkey(signingPen.pubkey),
-    "secret"
-  );
-
-  const txEncryptionSeed = EnigmaUtils.GenerateNewSeed();
-  const client = new SigningCosmWasmClient(
-    httpUrl,
-    myWalletAddress,
-    (signBytes) => signingPen.sign(signBytes),
-    txEncryptionSeed, customFees
-  );
-
-  const acc = await client.getAccount()
-  console.log(`wallet=${myWalletAddress}`);
-  account.balance = acc.balance[0].amount;
-
-  console.log(`balance=${myWalletAddress}, ${account.balance}`);
+  const client = await getSigningClient();
+  const account = await client.getAccount();
+  console.log("Deployer account: ", account);
 
   //upload staking contract
-  console.log("Dir: ", __dirname);
   wasm = fs.readFileSync(__dirname + "/../../contract.wasm");
   uploadReceipt = await client.upload(wasm, {})
   console.info(`Staking upload succeeded. Receipt: ${JSON.stringify(uploadReceipt)}`);
@@ -77,7 +35,7 @@ async function main() {
   label = "steaksauce" + (codes.length + 2);
 
   const initMsg = {
-    "name": "STEAKSAUCE",
+    "name": "SECRETSTEAKSAUCE",
     "symbol":"SSS",
     "decimals":6,
     "prng_seed": Buffer.from("hello world").toString('base64'),
@@ -96,9 +54,8 @@ async function main() {
   const stakingInit = await client.instantiate(codeId, initMsg, label);
   console.info(`Staking contract instantiated at ${stakingInit.contractAddress}`);
 
-  console.log('querying minters')
   let result = await client.queryContractSmart(stakingInit.contractAddress, { minters: {  } });
-  console.log(result)
+  console.log("Minters: ", result)
 
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
   console.log("token_info: ", result)
@@ -123,6 +80,23 @@ async function main() {
 
   const delegationShares = await getDelegationShares(stakingInit.contractAddress)
   console.log("Delegation shares: ", delegationShares);
+
+  let blockHeight = await (await client.getBlock()).header.height
+
+  const rewardBlock = blockHeight + 2;
+  while (blockHeight < rewardBlock) {
+    await sleep(6000)
+    blockHeight = await (await client.getBlock()).header.height
+  }
+
+  result = await client.execute(stakingInit.contractAddress, { 
+    claim_rewards: { } 
+  });
+  console.log("claim_rewards result: ", JSON.parse(fromUtf8(result.data)))
+
+  // contract should have the reward balance now
+  console.log("Contract Account: ", await client.getAccount(stakingInit.contractAddress));
+
 }
 
 main().then(

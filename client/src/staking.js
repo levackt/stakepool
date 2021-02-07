@@ -19,13 +19,11 @@ module.exports = {
     
         try {
             const response = await fetch(url)
-            console.log('resp: ', response.status);
             const delegations = await response.json();
             console.log('delegations: ', delegations);
             if (delegations.result.length === 1) {
                 return delegations.result[0].shares;
             } else {
-                console.log('delegations length: ', delegations.result.length);
                 return 0
             }
         } catch (error) {

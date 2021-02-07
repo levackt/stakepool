@@ -1,22 +1,5 @@
 use cosmwasm_std::{BondedRatioResponse, Coin, CosmosMsg, DistQuery, HumanAddr, InflationResponse, MintQuery, Querier, RewardsResponse, StakingMsg, StakingQuery, StdResult, Uint128, UnbondingDelegationsResponse, StdError};
 
-/// returns the yearly expected APR
-pub fn interest_rate<Q: Querier>(querier: &Q) -> StdResult<u128> {
-    let query = MintQuery::Inflation {};
-
-    let resp: InflationResponse = querier.query(&query.into())?;
-
-    let inflation = crate::utils::dec_to_uint(resp.inflation_rate)?;
-
-    let query = MintQuery::BondedRatio {};
-
-    let resp: BondedRatioResponse = querier.query(&query.into())?;
-
-    let bonded_ratio = crate::utils::dec_to_uint(resp.bonded_ratio)?;
-
-    Ok(inflation / bonded_ratio)
-}
-
 pub fn get_locked_balance<Q: Querier>(
     querier: &Q,
     contract_address: &HumanAddr,
@@ -67,7 +50,6 @@ pub fn get_rewards<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<U
 
 // get_bonded returns the total amount of delegations from contract
 // it ensures they are all the same denom
-// Simon I'm trusting you that this works don't let me down bro
 pub fn get_bonded<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<Uint128> {
     let bonds = querier.query_all_delegations(contract)?;
     if bonds.is_empty() {
@@ -89,7 +71,6 @@ pub fn get_bonded<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<Ui
 
 // get_bonded returns the total amount of delegations from contract
 // it ensures they are all the same denom
-// Simon I'm trusting you that this works don't let me down bro
 pub fn get_unbonding<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<Uint128> {
     let query = StakingQuery::UnbondingDelegations {
         delegator: contract.clone(),
