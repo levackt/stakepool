@@ -1,7 +1,7 @@
 [package]
-name = "configurable-snip20"
+name = "stakepool"
 version = "0.1.0"
-authors = ["Itzik <itzik@keytango.io>"]
+authors = ["Itzik <itzik@keytango.io>, segfaultdoc@protonmail.com"]
 edition = "2018"
 
 exclude = [
