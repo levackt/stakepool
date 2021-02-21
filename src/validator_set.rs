@@ -1,4 +1,3 @@
-use bincode2;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{CONFIG_KEY, VALIDATOR_SET_KEY};
@@ -31,6 +30,7 @@ pub struct ValidatorSet {
 }
 
 impl ValidatorSet {
+    #[allow(dead_code)]
     pub fn remove(&mut self, address: &String, force: bool) -> StdResult<()> {
         let pos = self.exists(address);
         if pos.is_none() {
@@ -59,6 +59,7 @@ impl ValidatorSet {
         }
     }
 
+    #[allow(dead_code)]
     pub fn unbond(&mut self, to_stake: u128) -> StdResult<String> {
         if self.validators.is_empty() {
             return Err(StdError::generic_err(
@@ -89,7 +90,7 @@ impl ValidatorSet {
 
     pub fn get_validator_address(&mut self) -> Option<&String> {
         if self.validators.is_empty() {
-            return None
+            return None;
         }
 
         // testing 1 validator
@@ -107,10 +108,7 @@ pub fn get_validator_set<S: Storage>(store: &S) -> StdResult<ValidatorSet> {
     Ok(record)
 }
 
-pub fn set_validator_set<S: Storage>(
-    store: &mut S,
-    validators: &ValidatorSet,
-) -> StdResult<()> {
+pub fn set_validator_set<S: Storage>(store: &mut S, validators: &ValidatorSet) -> StdResult<()> {
     let mut config_store = PrefixedStorage::new(CONFIG_KEY, store);
     let as_bytes = bincode2::serialize(validators)
         .map_err(|_| StdError::generic_err("Error packing validator set"))?;

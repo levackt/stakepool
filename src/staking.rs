@@ -1,5 +1,9 @@
-use cosmwasm_std::{BondedRatioResponse, Coin, CosmosMsg, DistQuery, HumanAddr, InflationResponse, MintQuery, Querier, RewardsResponse, StakingMsg, StakingQuery, StdResult, Uint128, UnbondingDelegationsResponse, StdError};
+use cosmwasm_std::{
+    Coin, CosmosMsg, DistQuery, HumanAddr, Querier, RewardsResponse, StakingMsg, StakingQuery,
+    StdError, StdResult, Uint128, UnbondingDelegationsResponse,
+};
 
+#[allow(dead_code)]
 pub fn get_locked_balance<Q: Querier>(
     querier: &Q,
     contract_address: &HumanAddr,
@@ -10,6 +14,7 @@ pub fn get_locked_balance<Q: Querier>(
     Ok(staked_balance.u128() + undelegation_balance.u128())
 }
 
+#[allow(dead_code)]
 pub fn get_total_onchain_balance<Q: Querier>(
     querier: &Q,
     contract_address: &HumanAddr,
@@ -18,6 +23,7 @@ pub fn get_total_onchain_balance<Q: Querier>(
     Ok(locked_balance)
 }
 
+#[allow(dead_code)]
 pub fn get_rewards<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<Uint128> {
     let query = DistQuery::Rewards {
         delegator: contract.clone(),
@@ -103,6 +109,7 @@ pub fn withdraw_to_self(validator: &String) -> CosmosMsg {
     })
 }
 
+#[allow(dead_code)]
 pub fn restake(validator: &String, amount: u128) -> Vec<CosmosMsg> {
     vec![
         CosmosMsg::Staking(StakingMsg::Withdraw {
@@ -129,6 +136,7 @@ pub fn stake(validator: &String, amount: u128) -> CosmosMsg {
     })
 }
 
+#[allow(dead_code)]
 pub fn undelegate(validator: &String, amount: u128) -> CosmosMsg {
     CosmosMsg::Staking(StakingMsg::Undelegate {
         validator: HumanAddr(validator.clone()),

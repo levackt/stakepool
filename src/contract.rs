@@ -3,7 +3,7 @@
 use cosmwasm_std::{
     log, to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Env, Extern,
     HandleResponse, HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage, StdError,
-    StdResult, Storage, Uint128, Validator, FullDelegation, Decimal
+    StdResult, Storage, Uint128,
 };
 
 use crate::msg::{
@@ -12,15 +12,14 @@ use crate::msg::{
 };
 use crate::rand::sha_256;
 use crate::receiver::Snip20ReceiveMsg;
+use crate::staking::{stake, withdraw_to_self};
 use crate::state::{
     get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key, set_receiver_hash,
     store_burn, store_deposit, store_mint, store_redeem, store_transfer, write_allowance,
     write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig,
-    VALIDATOR_SET_KEY
 };
-use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
-use crate::staking::{stake, withdraw_to_self};
+use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
@@ -96,7 +95,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
 
     // ensure the validator is registered
     let vals = deps.querier.query_validators()?;
-    let human_addr_wrap = HumanAddr(init_config.validator().clone());
+    let human_addr_wrap = HumanAddr(init_config.validator());
     if !vals.iter().any(|v| v.address == human_addr_wrap) {
         return Err(StdError::generic_err(format!(
             "{} is not in the current validator set",
@@ -105,7 +104,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     }
 
     let mut valset = ValidatorSet::default();
-    valset.add((init_config.validator()));
+    valset.add(init_config.validator());
 
     set_validator_set(&mut deps.storage, &valset)?;
 
@@ -236,7 +235,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::SetMinters { minters, .. } => set_minters(deps, env, minters),
 
         // ClaimRewards
-        HandleMsg::ClaimRewards { } => claim_rewards(deps, env),
+        HandleMsg::ClaimRewards {} => claim_rewards(deps, env),
     };
 
     pad_response(response)
@@ -550,7 +549,7 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
 ) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
+    let config = Config::from_storage(&mut deps.storage);
 
     check_if_admin(&config, &env.message.sender)?;
 
@@ -570,7 +569,9 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     Ok(res)
 }
 
-fn valid_amount(amt: u128) -> bool { amt >= 1000000 }
+fn valid_amount(amt: u128) -> bool {
+    amt >= 1000000
+}
 
 pub fn try_check_allowance<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
@@ -1342,21 +1343,16 @@ fn is_valid_symbol(symbol: &str) -> bool {
             .all(|byte| (byte >= b'A' && byte <= b'Z') || (b'0' <= byte && byte <= b'9'))
 }
 
-// pub fn migrate<S: Storage, A: Api, Q: Querier>(
-//     _deps: &mut Extern<S, A, Q>,
-//     _env: Env,
-//     _msg: MigrateMsg,
-// ) -> StdResult<MigrateResponse> {
-//     Ok(MigrateResponse::default())
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::msg::ResponseStatus;
     use crate::msg::{InitConfig, InitialBalance};
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{from_binary, BlockInfo, ContractInfo, MessageInfo, QueryResponse, WasmMsg};
+    use cosmwasm_std::{
+        from_binary, BlockInfo, ContractInfo, Decimal, FullDelegation, MessageInfo, QueryResponse,
+        Validator, WasmMsg,
+    };
     use std::any::Any;
 
     // Helper functions
@@ -1401,24 +1397,20 @@ mod tests {
         );
         deps.querier.update_staking(
             "SECSEC",
-            &[
-                Validator {
-                    address: HumanAddr(validator.clone()),
-                    commission: Decimal::percent(1),
-                    max_commission: Decimal::percent(2),
-                    /// TODO: what units are these (in terms of time)?
-                    max_change_rate: Decimal::percent(3),
-                }
-            ],
-            &[
-                FullDelegation{
-                    delegator: Default::default(),
-                    validator: Default::default(),
-                    amount: Default::default(),
-                    can_redelegate: Default::default(),
-                    accumulated_rewards: Default::default(),
-                }
-            ],
+            &[Validator {
+                address: HumanAddr(validator.clone()),
+                commission: Decimal::percent(1),
+                max_commission: Decimal::percent(2),
+                /// TODO: what units are these (in terms of time)?
+                max_change_rate: Decimal::percent(3),
+            }],
+            &[FullDelegation {
+                delegator: Default::default(),
+                validator: Default::default(),
+                amount: Default::default(),
+                can_redelegate: Default::default(),
+                accumulated_rewards: Default::default(),
+            }],
         );
 
         let env = mock_env("instantiator", &[]);
@@ -1446,38 +1438,9 @@ mod tests {
         };
 
         let result = init(&mut deps, env, init_msg);
-        assert!(
-            result.is_ok(),
-            "Init failed: {}",
-            result.err().unwrap()
-        );
+        assert!(result.is_ok(), "Init failed: {}", result.err().unwrap());
 
         deps
-    }
-
-    /// Will return a ViewingKey only for the first account in `initial_balances`
-    fn auth_query_helper(
-        initial_balances: Vec<InitialBalance>,
-    ) -> (ViewingKey, Extern<MockStorage, MockApi, MockQuerier>) {
-        let (init_result, mut deps) = init_helper(initial_balances.clone());
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let account = initial_balances[0].address.clone();
-        let create_vk_msg = HandleMsg::CreateViewingKey {
-            entropy: "42".to_string(),
-            padding: None,
-        };
-        let handle_response = handle(&mut deps, mock_env(account.0, &[]), create_vk_msg).unwrap();
-        let vk = match from_binary(&handle_response.data.unwrap()).unwrap() {
-            HandleAnswer::CreateViewingKey { key } => key,
-            _ => panic!("Unexpected result from handle"),
-        };
-
-        (vk, deps)
     }
 
     fn extract_error_msg<T: Any>(error: StdResult<T>) -> String {
@@ -1518,7 +1481,7 @@ mod tests {
             | HandleAnswer::SetMinters { status }
             | HandleAnswer::AddMinters { status }
             | HandleAnswer::RemoveMinters { status } => {
-                matches!(status, ResponseStatus::Success {..})
+                matches!(status, ResponseStatus::Success { .. })
             }
             _ => panic!("HandleAnswer not supported for success extraction"),
         }
@@ -1529,7 +1492,7 @@ mod tests {
     #[test]
     fn test_init_sanity() {
         let init_amt = 10000000;
-        let mut deps = init_helper_with_config(
+        let deps = init_helper_with_config(
             vec![InitialBalance {
                 address: HumanAddr("bob".to_string()),
                 amount: Uint128(init_amt),
@@ -1706,8 +1669,12 @@ mod tests {
             code_hash: "this_is_a_hash_of_a_code".to_string(),
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env(seg_addr.clone().to_string(), &[]), handle_msg);
+
+        let handle_result = handle(
+            &mut deps,
+            mock_env(seg_addr.clone().to_string(), &[]),
+            handle_msg,
+        );
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
 
@@ -2060,8 +2027,9 @@ mod tests {
     fn handle_burn_from_setup(
         addr: HumanAddr,
         init_amount: u128,
-        enable_burn: bool) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let mut deps = init_helper_with_config(
+        enable_burn: bool,
+    ) -> Extern<MockStorage, MockApi, MockQuerier> {
+        let deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2080,35 +2048,27 @@ mod tests {
     #[test]
     fn test_handle_burn_from_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_burn_from_setup(seg_addr.clone(), 5000000, false);
-
+        let mut deps = handle_burn_from_setup(seg_addr.clone(), 5000000, false);
         let handle_msg = HandleMsg::BurnFrom {
             owner: seg_addr.clone(),
             amount: Uint128(25000000),
             memo: None,
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env("alice", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("Burn functionality is not enabled for this token."));
     }
 
     fn check_handle_result(r: StdResult<HandleResponse>) {
-        assert!(
-            r.is_ok(),
-            "handle() failed: {}",
-            r.err().unwrap()
-        );
+        assert!(r.is_ok(), "handle() failed: {}", r.err().unwrap());
     }
 
     #[test]
     fn test_handle_burn_from_insufficient_allowance() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
         let init_amt = 1000000;
-        let mut deps =
-            handle_burn_from_setup(seg_addr.clone(), init_amt, true);
+        let mut deps = handle_burn_from_setup(seg_addr.clone(), init_amt, true);
 
         // Burn before allowance
         let handle_msg = HandleMsg::BurnFrom {
@@ -2118,8 +2078,7 @@ mod tests {
             padding: None,
         };
         let alice_addr = HumanAddr("alice".to_string());
-        let handle_result =
-            handle(&mut deps, mock_env(alice_addr.to_string(), &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env(alice_addr.to_string(), &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("insufficient allowance"));
 
@@ -2129,7 +2088,11 @@ mod tests {
             padding: None,
             expiration: None,
         };
-        check_handle_result(handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg));
+        check_handle_result(handle(
+            &mut deps,
+            mock_env(seg_addr.to_string(), &[]),
+            handle_msg,
+        ));
         // Burn an amount > allowance
         let handle_msg = HandleMsg::BurnFrom {
             owner: seg_addr.clone(),
@@ -2137,8 +2100,7 @@ mod tests {
             memo: None,
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env(alice_addr.to_string(), &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env(alice_addr.to_string(), &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("insufficient allowance"));
 
@@ -2151,8 +2113,7 @@ mod tests {
     fn test_handle_burn_from_happy_path() {
         let init_amt = 2_000_000;
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_burn_from_setup(seg_addr.clone(), init_amt, true);
+        let mut deps = handle_burn_from_setup(seg_addr.clone(), init_amt, true);
 
         let alice_addr = HumanAddr("alice".to_string());
         let msg = HandleMsg::IncreaseAllowance {
@@ -2161,9 +2122,7 @@ mod tests {
             padding: None,
             expiration: None,
         };
-        check_handle_result(
-            handle(&mut deps, mock_env(seg_addr.to_string(), &[]), msg)
-        );
+        check_handle_result(handle(&mut deps, mock_env(seg_addr.to_string(), &[]), msg));
 
         let burn_amt = Uint128(1_900_000);
         let msg = HandleMsg::BurnFrom {
@@ -2172,14 +2131,13 @@ mod tests {
             memo: None,
             padding: None,
         };
-        check_handle_result(
-            handle(&mut deps, mock_env(alice_addr.to_string(), &[]), msg)
-        );
+        check_handle_result(handle(
+            &mut deps,
+            mock_env(alice_addr.to_string(), &[]),
+            msg,
+        ));
 
-        let seg_canonical = deps
-            .api
-            .canonical_address(&(seg_addr.clone()))
-            .unwrap();
+        let seg_canonical = deps.api.canonical_address(&(seg_addr.clone())).unwrap();
         let seg_balance = crate::state::ReadonlyBalances::from_storage(&deps.storage)
             .account_amount(&seg_canonical);
         assert_eq!(seg_balance, init_amt - burn_amt.u128());
@@ -2399,15 +2357,19 @@ mod tests {
         );
 
         let contract_status = ReadonlyConfig::from_storage(&deps.storage).contract_status();
-        assert!(matches!(contract_status, ContractStatusLevel::StopAll{..}));
+        assert!(matches!(
+            contract_status,
+            ContractStatusLevel::StopAll { .. }
+        ));
     }
 
     fn handle_redeem_setup(
         addr: HumanAddr,
         init_amount: u128,
         contract_balance: u128,
-        enable_redeem: bool) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let mut deps = init_helper_with_config(
+        enable_redeem: bool,
+    ) -> Extern<MockStorage, MockApi, MockQuerier> {
+        let deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2426,8 +2388,7 @@ mod tests {
     #[test]
     fn test_handle_redeem_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_redeem_setup(seg_addr.clone(), 500000000, 0, false);
+        let mut deps = handle_redeem_setup(seg_addr.clone(), 500000000, 0, false);
 
         let handle_msg = HandleMsg::Redeem {
             amount: Uint128(1000),
@@ -2435,8 +2396,7 @@ mod tests {
             memo: None,
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("Redeem functionality is not enabled for this token."));
     }
@@ -2444,8 +2404,7 @@ mod tests {
     #[test]
     fn test_handle_redeem_more_than_reserve() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_redeem_setup(seg_addr.clone(), 500000000, 1000,true);
+        let mut deps = handle_redeem_setup(seg_addr.clone(), 500000000, 1000, true);
 
         // try to redeem more than reserve
         let handle_msg = HandleMsg::Redeem {
@@ -2454,9 +2413,7 @@ mod tests {
             memo: None,
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg);
-
+        let handle_result = handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains(
             "You are trying to redeem for more SCRT than the token has in its deposit reserve."
@@ -2467,8 +2424,7 @@ mod tests {
     fn test_handle_redeem_happy_path() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
         let init_amt = 5000000;
-        let mut deps =
-            handle_redeem_setup(seg_addr.clone(), init_amt, 2000,true);
+        let mut deps = handle_redeem_setup(seg_addr.clone(), init_amt, 2000, true);
 
         let redeem_amt = 1000;
         let handle_msg = HandleMsg::Redeem {
@@ -2477,23 +2433,23 @@ mod tests {
             memo: None,
             padding: None,
         };
-        check_handle_result(
-            handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg)
-        );
+        check_handle_result(handle(
+            &mut deps,
+            mock_env(seg_addr.to_string(), &[]),
+            handle_msg,
+        ));
 
         let balances = ReadonlyBalances::from_storage(&deps.storage);
-        let canonical = deps
-            .api
-            .canonical_address(&seg_addr)
-            .unwrap();
+        let canonical = deps.api.canonical_address(&seg_addr).unwrap();
         assert_eq!(balances.account_amount(&canonical), init_amt - redeem_amt)
     }
 
     fn handle_deposit_setup(
         addr: HumanAddr,
         init_amount: u128,
-        enable_deposit: bool) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let mut deps = init_helper_with_config(
+        enable_deposit: bool,
+    ) -> Extern<MockStorage, MockApi, MockQuerier> {
+        let deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2512,8 +2468,7 @@ mod tests {
     #[test]
     fn test_handle_deposit_happy_path() {
         let addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_deposit_setup(addr.clone(), 50000000, true);
+        let mut deps = handle_deposit_setup(addr.clone(), 50000000, true);
 
         let handle_msg = HandleMsg::Deposit {
             memo: None,
@@ -2537,10 +2492,7 @@ mod tests {
         );
 
         let balances = ReadonlyBalances::from_storage(&deps.storage);
-        let canonical = deps
-            .api
-            .canonical_address(&addr)
-            .unwrap();
+        let canonical = deps.api.canonical_address(&addr).unwrap();
         assert_eq!(balances.account_amount(&canonical), 51000000)
     }
 
@@ -2650,8 +2602,7 @@ mod tests {
     #[test]
     fn test_handle_mint_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_mint_setup(seg_addr.clone(), 50000000, false);
+        let mut deps = handle_mint_setup(seg_addr.clone(), 50000000, false);
 
         // try to mint when mint is disabled
         let mint_amount: u128 = 100;
@@ -2669,9 +2620,7 @@ mod tests {
     #[test]
     fn test_handle_mint_happy_path() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_mint_setup(seg_addr.clone(), 50000000, true);
-
+        let mut deps = handle_mint_setup(seg_addr.clone(), 50000000, true);
         let supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
         let mint_amount: u128 = 100;
         let handle_msg = HandleMsg::Mint {
@@ -2680,10 +2629,7 @@ mod tests {
             memo: Some("Mint memo".to_string()),
             padding: None,
         };
-
-        check_handle_result(
-            handle(&mut deps, mock_env("admin", &[]), handle_msg)
-        );
+        check_handle_result(handle(&mut deps, mock_env("admin", &[]), handle_msg));
 
         let new_supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
         assert_eq!(new_supply, supply + mint_amount);
@@ -2857,8 +2803,7 @@ mod tests {
     #[test]
     fn test_handle_set_minters_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_mint_setup(seg_addr.clone(), 10000000, false);
+        let mut deps = handle_mint_setup(seg_addr.clone(), 10000000, false);
 
         // try when mint disabled
         let handle_msg = HandleMsg::SetMinters {
@@ -2934,8 +2879,7 @@ mod tests {
             0,
             "v".to_string(),
         );
-
-        let mut deps_for_failure= init_helper_with_config(
+        let mut deps_for_failure = init_helper_with_config(
             vec![InitialBalance {
                 address: HumanAddr("bob".to_string()),
                 amount: Uint128(500000000),
@@ -2993,8 +2937,9 @@ mod tests {
     fn handle_mint_setup(
         addr: HumanAddr,
         init_amount: u128,
-        enable_mint: bool) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let mut deps = init_helper_with_config(
+        enable_mint: bool,
+    ) -> Extern<MockStorage, MockApi, MockQuerier> {
+        let deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -3013,9 +2958,7 @@ mod tests {
     #[test]
     fn test_handle_remove_minters_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
-        let mut deps =
-            handle_mint_setup(seg_addr.clone(), 1000000, false);
-
+        let mut deps = handle_mint_setup(seg_addr.clone(), 1000000, false);
         // try when mint disabled
         let handle_msg = HandleMsg::RemoveMinters {
             minters: vec![seg_addr.clone()],
@@ -3182,31 +3125,28 @@ mod tests {
             \"enable_burn\":{}}}",
                 true, false, false, true, false
             )
-                .as_bytes(),
+            .as_bytes(),
         ))
-            .unwrap();
+        .unwrap();
 
         let init_supply = Uint128(50000000);
-        let validators = &[
-            Validator {
-                address: HumanAddr("v".to_string()),
-                commission: Decimal::percent(1),
-                max_commission: Decimal::percent(2),
-                max_change_rate: Decimal::percent(3),
-            }
-        ];
-        let delegations = &[
-            FullDelegation{
-                delegator: Default::default(),
-                validator: Default::default(),
-                amount: Default::default(),
-                can_redelegate: Default::default(),
-                accumulated_rewards: Default::default(),
-            }
-        ];
+        let validators = &[Validator {
+            address: HumanAddr("v".to_string()),
+            commission: Decimal::percent(1),
+            max_commission: Decimal::percent(2),
+            max_change_rate: Decimal::percent(3),
+        }];
+        let delegations = &[FullDelegation {
+            delegator: Default::default(),
+            validator: Default::default(),
+            amount: Default::default(),
+            can_redelegate: Default::default(),
+            accumulated_rewards: Default::default(),
+        }];
 
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
@@ -3272,25 +3212,22 @@ mod tests {
         .unwrap();
 
         let init_supply = Uint128(50000000);
-        let validators = &[
-            Validator {
-                address: HumanAddr("v".to_string()),
-                commission: Decimal::percent(1),
-                max_commission: Decimal::percent(2),
-                max_change_rate: Decimal::percent(3),
-            }
-        ];
-        let delegations = &[
-            FullDelegation{
-                delegator: Default::default(),
-                validator: Default::default(),
-                amount: Default::default(),
-                can_redelegate: Default::default(),
-                accumulated_rewards: Default::default(),
-            }
-        ];
+        let validators = &[Validator {
+            address: HumanAddr("v".to_string()),
+            commission: Decimal::percent(1),
+            max_commission: Decimal::percent(2),
+            max_change_rate: Decimal::percent(3),
+        }];
+        let delegations = &[FullDelegation {
+            delegator: Default::default(),
+            validator: Default::default(),
+            amount: Default::default(),
+            can_redelegate: Default::default(),
+            accumulated_rewards: Default::default(),
+        }];
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
@@ -3346,26 +3283,23 @@ mod tests {
         let init_decimals = 8;
 
         let init_supply = Uint128(50000000);
-        let validators = &[
-            Validator {
-                address: HumanAddr("v".to_string()),
-                commission: Decimal::percent(1),
-                max_commission: Decimal::percent(2),
-                max_change_rate: Decimal::percent(3),
-            }
-        ];
-        let delegations = &[
-            FullDelegation{
-                delegator: Default::default(),
-                validator: Default::default(),
-                amount: Default::default(),
-                can_redelegate: Default::default(),
-                accumulated_rewards: Default::default(),
-            }
-        ];
+        let validators = &[Validator {
+            address: HumanAddr("v".to_string()),
+            commission: Decimal::percent(1),
+            max_commission: Decimal::percent(2),
+            max_change_rate: Decimal::percent(3),
+        }];
+        let delegations = &[FullDelegation {
+            delegator: Default::default(),
+            validator: Default::default(),
+            amount: Default::default(),
+            can_redelegate: Default::default(),
+            accumulated_rewards: Default::default(),
+        }];
 
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
         let init_config: InitConfig = from_binary(&Binary::from(
             format!(
@@ -3424,7 +3358,9 @@ mod tests {
         let init_supply = Uint128(5000000);
 
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
         let init_config: InitConfig = from_binary(&Binary::from(
             format!(
@@ -3483,7 +3419,8 @@ mod tests {
         let init_supply = Uint128(10000000000000);
 
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
 
         let env = mock_env("instantiator", &[]);
         let init_config: InitConfig = from_binary(&Binary::from(
@@ -3550,11 +3487,13 @@ mod tests {
             \"validator\": \"v\",
             \"enable_burn\":{}}}",
                 true, false, false, false, false
-            ).as_bytes(),
+            )
+            .as_bytes(),
         ))
-            .unwrap();
+        .unwrap();
         let mut deps = mock_dependencies(20, &[]);
-        deps.querier.update_staking("SECSEC", validators, delegations);
+        deps.querier
+            .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
@@ -3727,8 +3666,7 @@ mod tests {
             key: "key".to_string(),
             padding: None,
         };
-        let handle_result =
-            handle(&mut deps, mock_env("bob", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let unwrapped_result: HandleAnswer =
             from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
         assert_eq!(
