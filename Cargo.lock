@@ -176,28 +176,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "configurable-snip20"
-version = "0.1.0"
-dependencies = [
- "base64 0.12.3",
- "bincode2",
- "cosmwasm-schema",
- "cosmwasm-sgx-vm",
- "cosmwasm-std",
- "cosmwasm-storage",
- "hex",
- "rand_chacha",
- "rand_core",
- "rust_decimal",
- "schemars",
- "secret-toolkit",
- "serde",
- "sha2 0.9.1",
- "snafu",
- "subtle 2.2.3",
-]
-
-[[package]]
 name = "cosmwasm-schema"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -791,6 +769,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "stakepool"
+version = "0.1.0"
+dependencies = [
+ "base64 0.12.3",
+ "bincode2",
+ "cosmwasm-schema",
+ "cosmwasm-sgx-vm",
+ "cosmwasm-std",
+ "cosmwasm-storage",
+ "hex",
+ "rand_chacha",
+ "rand_core",
+ "rust_decimal",
+ "schemars",
+ "secret-toolkit",
+ "serde",
+ "sha2 0.9.1",
+ "snafu",
+ "subtle 2.2.3",
 ]
 
 [[package]]

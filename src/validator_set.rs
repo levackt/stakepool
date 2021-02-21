@@ -1,7 +1,7 @@
 use bincode2;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{CONFIG_KEY, VALIDATOR_ADDRESS_KEY};
+use crate::state::{CONFIG_KEY, VALIDATOR_SET_KEY};
 use cosmwasm_std::{ReadonlyStorage, StdError, StdResult, Storage};
 use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
 use std::cmp::Ordering;
@@ -101,7 +101,7 @@ impl ValidatorSet {
 /// todo: validator address is a String till we test with HumanAddr and see that secretval addresses are working
 pub fn get_validator_set<S: Storage>(store: &S) -> StdResult<ValidatorSet> {
     let config_store = ReadonlyPrefixedStorage::new(CONFIG_KEY, store);
-    let x = config_store.get(VALIDATOR_ADDRESS_KEY).unwrap();
+    let x = config_store.get(VALIDATOR_SET_KEY).unwrap();
     let record: ValidatorSet = bincode2::deserialize(&x)
         .map_err(|_| StdError::generic_err("Error unpacking validator set"))?;
     Ok(record)
@@ -109,13 +109,13 @@ pub fn get_validator_set<S: Storage>(store: &S) -> StdResult<ValidatorSet> {
 
 pub fn set_validator_set<S: Storage>(
     store: &mut S,
-    validator_address: &ValidatorSet,
+    validators: &ValidatorSet,
 ) -> StdResult<()> {
     let mut config_store = PrefixedStorage::new(CONFIG_KEY, store);
-    let as_bytes = bincode2::serialize(validator_address)
+    let as_bytes = bincode2::serialize(validators)
         .map_err(|_| StdError::generic_err("Error packing validator set"))?;
 
-    config_store.set(VALIDATOR_ADDRESS_KEY, &as_bytes);
+    config_store.set(VALIDATOR_SET_KEY, &as_bytes);
 
     Ok(())
 }
