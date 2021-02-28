@@ -131,20 +131,17 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     match contract_status {
         ContractStatusLevel::StopAll | ContractStatusLevel::StopAllButRedeems => {
             let response = match msg {
-                HandleMsg::SetContractStatus { level, .. } => set_contract_status(deps, env, level),
-                HandleMsg::Redeem { amount, memo, .. }
-                    if contract_status == ContractStatusLevel::StopAllButRedeems =>
-                {
-                    try_redeem(deps, env, None, amount, memo)
-                }
+                HandleMsg::SetContractStatus { level, .. } =>
+                    set_contract_status(deps, env, level),
+                HandleMsg::Redeem { amount, memo, .. } =>
+                    try_redeem(deps, env, None, amount, memo, contract_status),
                 HandleMsg::RedeemTo {
                     recipient,
                     amount,
                     memo,
                     ..
-                } if contract_status == ContractStatusLevel::StopAllButRedeems => {
-                    try_redeem(deps, env, Some(recipient), amount, memo)
-                }
+                } =>
+                    try_redeem(deps, env, Some(recipient), amount, memo, contract_status),
                 _ => Err(StdError::generic_err(
                     "This contract is stopped and this action is not allowed",
                 )),
@@ -157,13 +154,14 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     let response = match msg {
         // Native
         HandleMsg::Deposit { memo, .. } => try_deposit(deps, env, memo),
-        HandleMsg::Redeem { amount, memo, .. } => try_redeem(deps, env, None, amount, memo),
+        HandleMsg::Redeem { amount, memo, .. } =>
+            try_redeem(deps, env, None, amount, memo, contract_status),
         HandleMsg::RedeemTo {
             recipient,
             amount,
             memo,
             ..
-        } => try_redeem(deps, env, Some(recipient), amount, memo),
+        } => try_redeem(deps, env, Some(recipient), amount, memo, contract_status),
 
         // Base
         HandleMsg::Transfer {
@@ -671,7 +669,13 @@ fn try_redeem<S: Storage, A: Api, Q: Querier>(
     redeem_to: Option<HumanAddr>,
     amount: Uint128,
     memo: Option<String>,
+    status: ContractStatusLevel,
 ) -> StdResult<HandleResponse> {
+    if status == ContractStatusLevel::StopAll {
+        return Err(StdError::generic_err(
+            "Cannot redeem funds while contract has `StopAllButRedeems` status",
+        ))
+    }
     let amount_raw = amount.u128();
 
     let mut config = Config::from_storage(&mut deps.storage);
@@ -2796,7 +2800,7 @@ mod tests {
         let error = extract_error_msg(handle_result);
         assert_eq!(
             error,
-            "This contract is stopped and this action is not allowed".to_string()
+            "Cannot redeem funds while contract has `StopAllButRedeems` status".to_string()
         );
     }
 
