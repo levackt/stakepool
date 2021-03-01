@@ -1,7 +1,7 @@
 [package]
 name = "stakepool"
 version = "0.1.0"
-authors = ["Itzik <itzik@keytango.io>, segfaultdoc@protonmail.com"]
+authors = ["Itzik <itzik@keytango.io>, segfaultdoc@protonmail.com, Taariq Levack <levackt@users.noreply.github.com>"]
 edition = "2018"
 
 exclude = [
@@ -45,7 +45,8 @@ hex = "0.4.2"
 rust_decimal = { version = "1.7.0", default-features = false}
 
 rand_chacha = { version = "0.2.2", default-features = false }
-rand_core = { version =  "0.5.1", default-features = false }
+#rand_core = { version =  "0.5.1", default-features = false }
+rand = { version = "0.7.3" }
 sha2 = { version = "0.9.1", default-features = false }
 
 [dev-dependencies]

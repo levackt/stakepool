@@ -275,6 +275,9 @@ pub enum HandleAnswer {
     },
     ClaimRewards {
         status: ResponseStatus,
+    },
+    LotteryWinner {
+        status: ResponseStatus,
     }
 }
 

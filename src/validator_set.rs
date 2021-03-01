@@ -96,6 +96,17 @@ impl ValidatorSet {
         let val = self.validators.front_mut().unwrap();
         Some(&val.address)
     }
+
+    pub fn get_winner(&mut self) -> Option<&String> {
+        // todo get entries
+        if self.validators.is_empty() {
+            return None
+        }
+
+        // testing 1 validator
+        let val = self.validators.front_mut().unwrap();
+        Some(&val.address)
+    }
 }
 
 /// todo: validator address is a String till we test with HumanAddr and see that secretval addresses are working

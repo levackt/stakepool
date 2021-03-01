@@ -20,7 +20,7 @@ use crate::state::{
 };
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
-use crate::staking::{stake, withdraw_to_self};
+use crate::staking::{stake, withdraw_to_winner};
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
@@ -559,7 +559,35 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     let mut messages: Vec<CosmosMsg> = vec![];
 
-    messages.push(withdraw_to_self(&validator));
+    // todo withdraw to winner
+    // messages.push(withdraw_to_winner(&validator, &winner));
+    messages.push(withdraw_to_winner(&validator, &validator));
+
+    // this way every time we call the end_lottery function we will get a different result. Plus it's going to be pretty hard to
+    // predict the exact time of the block, so less chance of cheating
+    // state.entropy.extend_from_slice(&env.block.time.to_be_bytes());
+    //
+    // let entry_iter = &state.entries.clone();
+    // let weight_iter = &state.entries.clone();
+    // let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
+    // let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
+    //
+    // let mut hasher = Sha256::new();
+    //
+    // // write input message
+    // hasher.update(&state.seed);
+    // hasher.update(&state.entropy);
+    // let hash = hasher.finalize();
+    //
+    // let mut result = [0u8; 32];
+    // result.copy_from_slice(hash.as_slice());
+    //
+    // let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
+    //
+    // let dist = WeightedIndex::new(&weights).unwrap();
+    // let sample = dist.sample(&mut rng).clone();
+    // let winner = entries[sample];
+
 
     let res = HandleResponse {
         messages,
