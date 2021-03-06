@@ -41,6 +41,9 @@ pub struct InitConfig {
     /// Indicates whether deposit functionality should be enabled
     /// default: False
     enable_deposit: Option<bool>,
+    /// Indicates whether transfer functionality should be enabled
+    /// default: False
+    enable_transfer: Option<bool>,
     /// Indicates whether redeem functionality should be enabled
     /// default: False
     enable_redeem: Option<bool>,
@@ -61,6 +64,10 @@ impl InitConfig {
 
     pub fn deposit_enabled(&self) -> bool {
         self.enable_deposit.unwrap_or(false)
+    }
+
+    pub fn transfer_enabled(&self) -> bool {
+        self.enable_transfer.unwrap_or(false)
     }
 
     pub fn redeem_enabled(&self) -> bool {

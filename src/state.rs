@@ -28,6 +28,7 @@ pub const KEY_TOTAL_SUPPLY: &[u8] = b"total_supply";
 pub const KEY_CONTRACT_STATUS: &[u8] = b"contract_status";
 pub const KEY_MINTERS: &[u8] = b"minters";
 pub const KEY_TX_COUNT: &[u8] = b"tx-count";
+pub const KEY_ENTROPY: &[u8] = b"entropy";
 
 pub const PREFIX_CONFIG: &[u8] = b"config";
 pub const PREFIX_BALANCES: &[u8] = b"balances";
@@ -35,6 +36,7 @@ pub const PREFIX_ALLOWANCES: &[u8] = b"allowances";
 pub const PREFIX_VIEW_KEY: &[u8] = b"viewingkey";
 pub const PREFIX_RECEIVERS: &[u8] = b"receivers";
 pub const VALIDATOR_SET_KEY: &[u8] = b"validator_set";
+
 
 // Note that id is a globally incrementing counter.
 // Since it's 64 bits long, even at 50 tx/s it would take
@@ -524,6 +526,8 @@ pub struct Constants {
     pub mint_is_enabled: bool,
     // is burn enabled
     pub burn_is_enabled: bool,
+    // is transfer enabled
+    pub transfer_is_enabled: bool,
 }
 
 pub struct ReadonlyConfig<'a, S: ReadonlyStorage> {
@@ -582,12 +586,16 @@ fn get_bin_data<T: DeserializeOwned, S: ReadonlyStorage>(storage: &S, key: &[u8]
 
 pub struct Config<'a, S: Storage> {
     storage: PrefixedStorage<'a, S>,
+    pub entropy: Vec<u8>,
+    pub entries: Vec<(CanonicalAddr, Uint128)>,
 }
 
 impl<'a, S: Storage> Config<'a, S> {
     pub fn from_storage(storage: &'a mut S) -> Self {
         Self {
             storage: PrefixedStorage::new(PREFIX_CONFIG, storage),
+            entropy: vec![],
+            entries: vec![]
         }
     }
 

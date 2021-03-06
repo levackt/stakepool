@@ -81,6 +81,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         prng_seed: prng_seed_hashed.to_vec(),
         total_supply_is_public: init_config.public_total_supply(),
         deposit_is_enabled: init_config.deposit_enabled(),
+        transfer_is_enabled: init_config.transfer_enabled(),
         redeem_is_enabled: init_config.redeem_enabled(),
         mint_is_enabled: init_config.mint_enabled(),
         burn_is_enabled: init_config.burn_enabled(),
@@ -551,10 +552,13 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     env: Env,
 ) -> StdResult<HandleResponse> {
     let mut config = Config::from_storage(&mut deps.storage);
-
     check_if_admin(&config, &env.message.sender)?;
 
-    let mut validator_set = get_validator_set(&deps.storage)?;
+    // this way every time we call the end_lottery function we will get a different result. Plus it's going to be pretty hard to
+    // predict the exact time of the block, so less chance of cheating
+    config.entropy.extend_from_slice(&env.block.time.to_be_bytes());
+
+    let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
 
     let mut messages: Vec<CosmosMsg> = vec![];
@@ -563,9 +567,22 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     // messages.push(withdraw_to_winner(&validator, &winner));
     messages.push(withdraw_to_winner(&validator, &validator));
 
+    let balances = ReadonlyBalances::from_storage(&deps.storage);
+
+
+    let logs = vec![];
+
+    //
+    //
+    // let accounts_array: StdResult<Vec<AccountInfo>> = balances
+    //     .range(None, None, Order::Ascending)
+    //     .map(|item| item.and_then(|(k, v)| Ok(AccountInfo { addr: k, amount: v })))
+    //     .collect();
+
+
     // this way every time we call the end_lottery function we will get a different result. Plus it's going to be pretty hard to
     // predict the exact time of the block, so less chance of cheating
-    // state.entropy.extend_from_slice(&env.block.time.to_be_bytes());
+    // config.entropy.extend_from_slice(&env.block.time.to_be_bytes());
     //
     // let entry_iter = &state.entries.clone();
     // let weight_iter = &state.entries.clone();
@@ -591,7 +608,7 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     let res = HandleResponse {
         messages,
-        log: vec![],
+        log: logs,
         data: Some(to_binary(&HandleAnswer::ClaimRewards { status: Success })?),
     };
 
@@ -659,6 +676,7 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
 
     let sender_address = deps.api.canonical_address(&env.message.sender)?;
 
+
     let mut balances = Balances::from_storage(&mut deps.storage);
     let account_balance = balances.balance(&sender_address);
     if let Some(account_balance) = account_balance.checked_add(amount) {
@@ -668,6 +686,13 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
             "This deposit would overflow your balance",
         ));
     }
+
+    let mut config = Config::from_storage(&mut deps.storage);
+    // update lottery entries
+    &config.entries.retain(|(k, _)| k != &sender_address);
+    &config.entries.push((sender_address.clone(), Uint128::from(account_balance)));
+    &config.entropy.extend(&env.block.height.to_be_bytes());
+    &config.entropy.extend(&env.block.time.to_be_bytes());
 
     store_deposit(
         &mut deps.storage,
@@ -854,6 +879,13 @@ fn try_send<S: Storage, A: Api, Q: Querier>(
     msg: Option<Binary>,
     memo: Option<String>,
 ) -> StdResult<HandleResponse> {
+    let constants = Config::from_storage(&mut deps.storage).constants()?;
+    if !constants.transfer_is_enabled {
+        return Err(StdError::generic_err(
+            "Send functionality is not enabled for this token.",
+        ));
+    }
+
     let sender = env.message.sender.clone();
     try_transfer_impl(deps, env, recipient, amount, memo)?;
 
