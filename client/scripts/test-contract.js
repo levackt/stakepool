@@ -15,13 +15,25 @@ async function main() {
 
   let validator;
 
-  // query the validators and take the first 
+  const user1 = {
+    mnemonic: process.env.MNEMONIC,
+    address: process.env.ADDRESS,
+  };
+
+  const user2 = {
+    mnemonic: process.env.MNEMONIC2,
+    address: process.env.ADDRESS2,
+  };
+
+  // query the validators and take the first
   const validators = await getValidators();
   validator = validators[0].operator_address;
   console.log("Validator: ", validator);
 
-  const client = await getSigningClient();
+  const client = await getSigningClient(user1.mnemonic);
+  const client2 = await getSigningClient(user2.mnemonic);
   const account = await client.getAccount();
+  const account2 = await client2.getAccount();
   console.log("Deployer account: ", account);
 
   //upload staking contract
@@ -60,6 +72,9 @@ async function main() {
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
   console.log("token_info: ", result)
 
+  result = await client.queryContractSmart(stakingInit.contractAddress, { lottery_info: {  } });
+  console.log("lottery_info: ", result)
+
   // query delegations
   const startDelegations = await getDelegationShares(stakingInit.contractAddress)
   console.log("Delegation shares: ", startDelegations);
@@ -78,6 +93,14 @@ async function main() {
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
   console.log("token_info: ", result);
 
+  // equal deposit from account2
+  result = await client2.execute(stakingInit.contractAddress, {
+      deposit: {}
+  }, "", stake);
+
+  result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
+  console.log("token_info: ", result);
+
   const delegationShares = await getDelegationShares(stakingInit.contractAddress)
   console.log("Delegation shares: ", delegationShares);
 
@@ -89,9 +112,10 @@ async function main() {
     blockHeight = await (await client.getBlock()).header.height
   }
 
-  result = await client.execute(stakingInit.contractAddress, { 
-    claim_rewards: { } 
+  result = await client.execute(stakingInit.contractAddress, {
+    claim_rewards: { }
   });
+  console.log("claim_rewards result: ", result)
   console.log("claim_rewards result: ", JSON.parse(fromUtf8(result.data)))
 
   // contract should have the reward balance now

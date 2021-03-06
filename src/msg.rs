@@ -282,6 +282,7 @@ pub enum HandleAnswer {
     },
     ClaimRewards {
         status: ResponseStatus,
+        winner: HumanAddr,
     },
     LotteryWinner {
         status: ResponseStatus,
@@ -291,6 +292,7 @@ pub enum HandleAnswer {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
+    LotteryInfo {},
     TokenInfo {},
     TokenConfig {},
     ExchangeRate {},
@@ -340,6 +342,10 @@ impl QueryMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
+    LotteryInfo {
+        start_height: u64,
+        end_height: u64,
+    },
     TokenInfo {
         name: String,
         symbol: String,

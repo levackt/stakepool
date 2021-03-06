@@ -5,7 +5,9 @@ use rust_decimal::Decimal;
 use cosmwasm_std::{
     Api, CanonicalAddr, Coin, HumanAddr, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, singleton, singleton_read,
+                       ReadonlySingleton, Singleton, bucket, bucket_read,
+                       Bucket, ReadonlyBucket};
 
 use secret_toolkit::{
     serialization::Json,
@@ -21,6 +23,7 @@ use crate::utils::{bytes_to_u32, bytes_to_u128};
 use serde::de::DeserializeOwned;
 
 pub static CONFIG_KEY: &[u8] = b"config";
+pub static LOTTERY_KEY: &[u8] = b"lottery";
 pub const PREFIX_TXS: &[u8] = b"transfers";
 
 pub const KEY_CONSTANTS: &[u8] = b"constants";
@@ -29,8 +32,10 @@ pub const KEY_CONTRACT_STATUS: &[u8] = b"contract_status";
 pub const KEY_MINTERS: &[u8] = b"minters";
 pub const KEY_TX_COUNT: &[u8] = b"tx-count";
 pub const KEY_ENTROPY: &[u8] = b"entropy";
+pub const KEY_ENTRIES: &[u8] = b"entries";
 
 pub const PREFIX_CONFIG: &[u8] = b"config";
+pub const PREFIX_LOTTERY: &[u8] = b"lottery";
 pub const PREFIX_BALANCES: &[u8] = b"balances";
 pub const PREFIX_ALLOWANCES: &[u8] = b"allowances";
 pub const PREFIX_VIEW_KEY: &[u8] = b"viewingkey";
@@ -530,6 +535,23 @@ pub struct Constants {
     pub transfer_is_enabled: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct Lottery {
+    pub entries: Vec<(CanonicalAddr, Uint128)>,
+    pub entropy: Vec<u8>,
+    pub seed: Vec<u8>,
+    pub start_height: u64,
+    pub end_height: u64,
+}
+
+pub fn lottery<S: Storage>(storage: &mut S) -> Singleton<S, Lottery> {
+    singleton(storage, LOTTERY_KEY)
+}
+
+pub fn lottery_read<S: Storage>(storage: &S) -> ReadonlySingleton<S, Lottery> {
+    singleton_read(storage, LOTTERY_KEY)
+}
+
 pub struct ReadonlyConfig<'a, S: ReadonlyStorage> {
     storage: ReadonlyPrefixedStorage<'a, S>,
 }
@@ -586,16 +608,12 @@ fn get_bin_data<T: DeserializeOwned, S: ReadonlyStorage>(storage: &S, key: &[u8]
 
 pub struct Config<'a, S: Storage> {
     storage: PrefixedStorage<'a, S>,
-    pub entropy: Vec<u8>,
-    pub entries: Vec<(CanonicalAddr, Uint128)>,
 }
 
 impl<'a, S: Storage> Config<'a, S> {
     pub fn from_storage(storage: &'a mut S) -> Self {
         Self {
             storage: PrefixedStorage::new(PREFIX_CONFIG, storage),
-            entropy: vec![],
-            entries: vec![]
         }
     }
 
@@ -661,6 +679,14 @@ impl<'a, S: Storage> Config<'a, S> {
     pub fn set_tx_count(&mut self, count: u64) -> StdResult<()> {
         set_bin_data(&mut self.storage, KEY_TX_COUNT, &count)
     }
+
+    pub fn entropy(&self) -> Vec<u8> {
+        self.as_readonly().entropy()
+    }
+
+    pub fn set_entropy(&mut self, entropy: Vec<u8>) {
+        self.storage.set(KEY_ENTROPY, &entropy);
+    }
 }
 
 /// This struct refactors out the readonly methods that we need for `Config` and `ReadonlyConfig`
@@ -702,6 +728,14 @@ impl<'a, S: ReadonlyStorage> ReadonlyConfigImpl<'a, S> {
 
     fn minters(&self) -> Vec<HumanAddr> {
         get_bin_data(self.0, KEY_MINTERS).unwrap()
+    }
+
+    fn entropy(&self) -> Vec<u8> {
+        get_bin_data(self.0, KEY_ENTROPY).unwrap()
+    }
+
+    fn entries(&self) -> Vec<(CanonicalAddr, Uint128)> {
+        get_bin_data(self.0, KEY_ENTRIES).unwrap()
     }
 
     pub fn tx_count(&self) -> u64 {

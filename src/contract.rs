@@ -11,13 +11,15 @@ use crate::msg::{
     ResponseStatus::Success,
 };
 use crate::rand::sha_256;
+use sha2::{Digest, Sha256};
+
+use rand::prelude::*;
+use rand_chacha::ChaChaRng;
+use rand::{RngCore, SeedableRng};
+use rand::distributions::WeightedIndex;
+
 use crate::receiver::Snip20ReceiveMsg;
-use crate::state::{
-    get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key, set_receiver_hash,
-    store_burn, store_deposit, store_mint, store_redeem, store_transfer, write_allowance,
-    write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig,
-    VALIDATOR_SET_KEY
-};
+use crate::state::{get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key, set_receiver_hash, store_burn, store_deposit, store_mint, store_redeem, store_transfer, write_allowance, write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY, Lottery, lottery, lottery_read};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
 use crate::staking::{stake, withdraw_to_winner};
@@ -68,7 +70,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     if msg.decimals > 39 {
         return Err(StdError::generic_err("Decimals must not exceed 39"));
     }
-    let admin = msg.admin.unwrap_or_else(|| env.message.sender);
+    let admin = msg.admin.unwrap_or_else(|| env.message.sender.clone());
 
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
 
@@ -109,6 +111,20 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     valset.add((init_config.validator()));
 
     set_validator_set(&mut deps.storage, &valset)?;
+
+    let height = env.block.height;
+
+    //Create first lottery
+    let a_lottery = Lottery {
+        entries: Vec::default(),
+        entropy: prng_seed_hashed.to_vec(),
+        start_height: height + 100,
+        end_height: height + 200,
+        seed: prng_seed_hashed.to_vec(),
+    };
+
+    // Save to state
+    lottery(&mut deps.storage).save(&a_lottery)?;
 
     Ok(InitResponse::default())
 }
@@ -245,6 +261,14 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
 
 pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryMsg) -> QueryResult {
     match msg {
+        QueryMsg::LotteryInfo {} => {
+            // query_lottery_info(&deps.storage)
+            let lottery = lottery_read(&deps.storage).load()?;
+            to_binary(&QueryAnswer::LotteryInfo {
+                start_height: lottery.start_height,
+                end_height: lottery.end_height
+            })
+        },
         QueryMsg::TokenInfo {} => query_token_info(&deps.storage),
         QueryMsg::TokenConfig {} => query_token_config(&deps.storage),
         QueryMsg::ExchangeRate {} => query_exchange_rate(&deps.storage),
@@ -338,6 +362,14 @@ fn query_token_info<S: ReadonlyStorage>(storage: &S) -> QueryResult {
         total_supply,
     })
 }
+
+// fn query_lottery_info<S: Storage>(storage: &S) -> QueryResult {
+//     let lottery = lottery_read(&storage).load()?;
+//     to_binary(&QueryAnswer::LotteryInfo {
+//         start_height: lottery.start_height,
+//         end_height: lottery.end_height
+//     })
+// }
 
 fn query_token_config<S: ReadonlyStorage>(storage: &S) -> QueryResult {
     let config = ReadonlyConfig::from_storage(storage);
@@ -547,6 +579,7 @@ fn set_contract_status<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+// claims the rewards to a random winner
 fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
@@ -554,62 +587,54 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let mut config = Config::from_storage(&mut deps.storage);
     check_if_admin(&config, &env.message.sender)?;
 
-    // this way every time we call the end_lottery function we will get a different result. Plus it's going to be pretty hard to
-    // predict the exact time of the block, so less chance of cheating
-    config.entropy.extend_from_slice(&env.block.time.to_be_bytes());
+    // this way every time we call the end_lottery function we will get a different result.
+    // Plus it's going to be pretty hard to predict the exact time of the block, so less chance of cheating
 
     let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
 
+    let mut lottery = lottery(&mut deps.storage).load()?;
+    lottery.entropy.extend(&env.block.height.to_be_bytes());
+    lottery.entropy.extend(&env.block.time.to_be_bytes());
+
+    let entry_iter = &lottery.entries.clone();
+    let weight_iter = &lottery.entries.clone();
+    let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
+    let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
+
+    let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
+    let prng_seed = constants.prng_seed;
+
+    let mut hasher = Sha256::new();
+    // write input message
+    hasher.update(&prng_seed);
+    hasher.update(&lottery.entropy);
+    let hash = hasher.finalize();
+
+    let mut result = [0u8; 32];
+    result.copy_from_slice(hash.as_slice());
+
+    let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
+
+    let dist = WeightedIndex::new(&weights).unwrap();
+    let sample = dist.sample(&mut rng).clone();
+    let winner = entries[sample];
+
     let mut messages: Vec<CosmosMsg> = vec![];
 
-    // todo withdraw to winner
-    // messages.push(withdraw_to_winner(&validator, &winner));
-    messages.push(withdraw_to_winner(&validator, &validator));
+    messages.push(withdraw_to_winner(&validator, &winner.to_string()));
 
-    let balances = ReadonlyBalances::from_storage(&deps.storage);
+    let logs = vec![log("winner", &winner.to_string())];
 
-
-    let logs = vec![];
-
-    //
-    //
-    // let accounts_array: StdResult<Vec<AccountInfo>> = balances
-    //     .range(None, None, Order::Ascending)
-    //     .map(|item| item.and_then(|(k, v)| Ok(AccountInfo { addr: k, amount: v })))
-    //     .collect();
-
-
-    // this way every time we call the end_lottery function we will get a different result. Plus it's going to be pretty hard to
-    // predict the exact time of the block, so less chance of cheating
-    // config.entropy.extend_from_slice(&env.block.time.to_be_bytes());
-    //
-    // let entry_iter = &state.entries.clone();
-    // let weight_iter = &state.entries.clone();
-    // let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
-    // let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
-    //
-    // let mut hasher = Sha256::new();
-    //
-    // // write input message
-    // hasher.update(&state.seed);
-    // hasher.update(&state.entropy);
-    // let hash = hasher.finalize();
-    //
-    // let mut result = [0u8; 32];
-    // result.copy_from_slice(hash.as_slice());
-    //
-    // let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
-    //
-    // let dist = WeightedIndex::new(&weights).unwrap();
-    // let sample = dist.sample(&mut rng).clone();
-    // let winner = entries[sample];
-
+    let answer = &HandleAnswer::ClaimRewards {
+        status: Success,
+        winner: deps.api.human_address(&winner.clone())?
+    };
 
     let res = HandleResponse {
         messages,
         log: logs,
-        data: Some(to_binary(&HandleAnswer::ClaimRewards { status: Success })?),
+        data: Some(to_binary(answer)?),
     };
 
     Ok(res)
@@ -676,7 +701,6 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
 
     let sender_address = deps.api.canonical_address(&env.message.sender)?;
 
-
     let mut balances = Balances::from_storage(&mut deps.storage);
     let account_balance = balances.balance(&sender_address);
     if let Some(account_balance) = account_balance.checked_add(amount) {
@@ -687,12 +711,15 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
         ));
     }
 
-    let mut config = Config::from_storage(&mut deps.storage);
     // update lottery entries
-    &config.entries.retain(|(k, _)| k != &sender_address);
-    &config.entries.push((sender_address.clone(), Uint128::from(account_balance)));
-    &config.entropy.extend(&env.block.height.to_be_bytes());
-    &config.entropy.extend(&env.block.time.to_be_bytes());
+    let mut a_lottery = lottery(&mut deps.storage).load()?;
+    if a_lottery.entries.len() > 0 {
+        &a_lottery.entries.retain(|(k, _)| k != &sender_address);
+    }
+    &a_lottery.entries.push((sender_address.clone(), Uint128::from(account_balance)));
+
+    &a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
 
     store_deposit(
         &mut deps.storage,
@@ -755,6 +782,15 @@ fn try_redeem<S: Storage, A: Api, Q: Querier>(
             account_balance, amount_raw
         )));
     }
+
+    // update lottery entries
+    let mut lottery = lottery(&mut deps.storage).load()?;
+    &lottery.entries.retain(|(k, _)| k != &sender_address);
+    if account_balance > 0 {
+        &lottery.entries.push((sender_address.clone(), Uint128::from(account_balance)));
+    }
+    lottery.entropy.extend(&env.block.height.to_be_bytes());
+    lottery.entropy.extend(&env.block.time.to_be_bytes());
 
     let token_reserve = deps
         .querier
