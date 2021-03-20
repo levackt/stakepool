@@ -19,10 +19,14 @@ use rand::{RngCore, SeedableRng};
 use rand::distributions::WeightedIndex;
 
 use crate::receiver::Snip20ReceiveMsg;
-use crate::state::{get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key, set_receiver_hash, store_burn, store_deposit, store_mint, store_redeem, store_transfer, write_allowance, write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY, Lottery, lottery, lottery_read};
+use crate::state::{get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key,
+                   set_receiver_hash, store_burn, store_deposit, store_mint, store_redeem,
+                   store_transfer, write_allowance, write_viewing_key, Balances, Config, Constants,
+                   ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY, Lottery, lottery,
+                   lottery_read, log_string, log_string_read};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
-use crate::staking::{stake, withdraw_to_winner};
+use crate::staking::{stake, withdraw_to_winner, withdraw_to_self};
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
@@ -587,7 +591,7 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let mut config = Config::from_storage(&mut deps.storage);
     check_if_admin(&config, &env.message.sender)?;
 
-    // this way every time we call the end_lottery function we will get a different result.
+    // this way every time we call the claim_rewards function we will get a different result.
     // Plus it's going to be pretty hard to predict the exact time of the block, so less chance of cheating
 
     let mut validator_set = get_validator_set(&mut deps.storage)?;
@@ -602,11 +606,13 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
     let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
 
+    log_string(&mut deps.storage).save(&format!("Number of entries = {}", &weights.len()))?;
+
     let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
+
     let prng_seed = constants.prng_seed;
 
     let mut hasher = Sha256::new();
-    // write input message
     hasher.update(&prng_seed);
     hasher.update(&lottery.entropy);
     let hash = hasher.finalize();
@@ -615,26 +621,26 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     result.copy_from_slice(hash.as_slice());
 
     let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
-
     let dist = WeightedIndex::new(&weights).unwrap();
+
     let sample = dist.sample(&mut rng).clone();
     let winner = entries[sample];
 
     let mut messages: Vec<CosmosMsg> = vec![];
 
-    messages.push(withdraw_to_winner(&validator, &winner.to_string()));
+    let winner_human = &deps.api.human_address(&winner.clone()).unwrap();
+    log_string(&mut deps.storage).save(&format!(
+        "And the winner is {}", winner_human.as_str()))?;
 
-    let logs = vec![log("winner", &winner.to_string())];
+    messages.push(withdraw_to_winner(&validator, &winner_human.clone()));
 
-    let answer = &HandleAnswer::ClaimRewards {
-        status: Success,
-        winner: deps.api.human_address(&winner.clone())?
-    };
+    let logs = vec![log("winner",  winner_human.as_str())];
 
     let res = HandleResponse {
         messages,
         log: logs,
-        data: Some(to_binary(answer)?),
+        data: Some(to_binary(&HandleAnswer::ClaimRewards {
+            status: Success, winner: winner_human.clone() })?),
     };
 
     Ok(res)
@@ -711,16 +717,6 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
         ));
     }
 
-    // update lottery entries
-    let mut a_lottery = lottery(&mut deps.storage).load()?;
-    if a_lottery.entries.len() > 0 {
-        &a_lottery.entries.retain(|(k, _)| k != &sender_address);
-    }
-    &a_lottery.entries.push((sender_address.clone(), Uint128::from(account_balance)));
-
-    &a_lottery.entropy.extend(&env.block.height.to_be_bytes());
-    &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
-
     store_deposit(
         &mut deps.storage,
         &sender_address,
@@ -728,6 +724,17 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
         "uscrt".to_string(),
         memo,
     )?;
+
+    // update lottery entries
+    let mut a_lottery = lottery(&mut deps.storage).load()?;
+    if a_lottery.entries.len() > 0 {
+        &a_lottery.entries.retain(|(k, _)| k != &sender_address);
+    }
+    &a_lottery.entries.push((sender_address.clone(), Uint128::from(account_balance + amount)));
+
+    &a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
+    lottery(&mut deps.storage).save(&a_lottery);
 
     let mut messages: Vec<CosmosMsg> = vec![];
 

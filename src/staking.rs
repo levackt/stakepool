@@ -103,10 +103,10 @@ pub fn withdraw_to_self(validator: &String) -> CosmosMsg {
     })
 }
 
-pub fn withdraw_to_winner(validator: &String, winner: &String) -> CosmosMsg {
+pub fn withdraw_to_winner(validator: &String, winner: &HumanAddr) -> CosmosMsg {
     CosmosMsg::Staking(StakingMsg::Withdraw {
         validator: HumanAddr(validator.clone()),
-        recipient: Some(HumanAddr(winner.clone())),
+        recipient: Some(winner.clone()),
     })
 }
 

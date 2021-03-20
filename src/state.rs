@@ -23,6 +23,7 @@ use crate::utils::{bytes_to_u32, bytes_to_u128};
 use serde::de::DeserializeOwned;
 
 pub static CONFIG_KEY: &[u8] = b"config";
+pub static LOG_KEY: &[u8] = b"anodalog";
 pub static LOTTERY_KEY: &[u8] = b"lottery";
 pub const PREFIX_TXS: &[u8] = b"transfers";
 
@@ -604,6 +605,14 @@ fn get_bin_data<T: DeserializeOwned, S: ReadonlyStorage>(storage: &S, key: &[u8]
         Some(bin_data) => Ok(bincode2::deserialize::<T>(&bin_data)
             .map_err(|e| StdError::serialize_err(type_name::<T>(), e))?),
     }
+}
+
+pub fn log_string<S: Storage>(storage: &mut S) -> Singleton<S, String> {
+    singleton(storage, LOG_KEY)
+}
+
+pub fn log_string_read<S: Storage>(storage: &S) -> ReadonlySingleton<S, String> {
+    singleton_read(storage, LOG_KEY)
 }
 
 pub struct Config<'a, S: Storage> {
