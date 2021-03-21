@@ -1,3 +1,4 @@
+use bincode2;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{CONFIG_KEY, VALIDATOR_SET_KEY};
@@ -30,7 +31,6 @@ pub struct ValidatorSet {
 }
 
 impl ValidatorSet {
-    #[allow(dead_code)]
     pub fn remove(&mut self, address: &String, force: bool) -> StdResult<()> {
         let pos = self.exists(address);
         if pos.is_none() {
@@ -59,7 +59,6 @@ impl ValidatorSet {
         }
     }
 
-    #[allow(dead_code)]
     pub fn unbond(&mut self, to_stake: u128) -> StdResult<String> {
         if self.validators.is_empty() {
             return Err(StdError::generic_err(
@@ -89,6 +88,17 @@ impl ValidatorSet {
     }
 
     pub fn get_validator_address(&mut self) -> Option<&String> {
+        if self.validators.is_empty() {
+            return None;
+        }
+
+        // testing 1 validator
+        let val = self.validators.front_mut().unwrap();
+        Some(&val.address)
+    }
+
+    pub fn get_winner(&mut self) -> Option<&String> {
+        // todo get entries
         if self.validators.is_empty() {
             return None;
         }

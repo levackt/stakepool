@@ -2,17 +2,11 @@ const { Encoding, fromUtf8 } = require("@iov/encoding");
 const { coin } = require("@cosmjs/sdk38");
 const { getValidators, getDelegationShares } = require('../src/staking');
 
-const { EnigmaUtils, Secp256k1Pen, CosmWasmClient, SigningCosmWasmClient, 
+const { EnigmaUtils, Secp256k1Pen, CosmWasmClient, SigningCosmWasmClient,
     pubkeyToAddress, encodeSecp256k1Pubkey } = require("secretjs");
 const fs = require("fs");
 require("dotenv").config();
 const httpUrl = process.env.SECRET_REST_URL;
-
-const account = {
-  mnemonic:
-  process.env.MNEMONIC,
-  address: process.env.ADDRESS,
-};
 
 const customFees = {
   upload: {
@@ -24,8 +18,8 @@ const customFees = {
     gas: "500000",
   },
   exec: {
-    amount: [{ amount: "250000", denom: "uscrt" }],
-    gas: "250000",
+    amount: [{ amount: "300000", denom: "uscrt" }],
+    gas: "300000",
   },
   send: {
     amount: [{ amount: "80000", denom: "uscrt" }],
@@ -37,9 +31,9 @@ const customFees = {
 module.exports = {
     getClient: function () {
         return new CosmWasmClient(httpUrl);
-    }, 
-    getSigningClient: async function () {
-        const signingPen = await Secp256k1Pen.fromMnemonic(account.mnemonic);
+    },
+    getSigningClient: async function (mnemonic) {
+        const signingPen = await Secp256k1Pen.fromMnemonic(mnemonic);
         const myWalletAddress = pubkeyToAddress(
             encodeSecp256k1Pubkey(signingPen.pubkey),
             "secret"

@@ -1,9 +1,9 @@
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    log, to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Env, Extern,
-    HandleResponse, HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage, StdError,
-    StdResult, Storage, Uint128,
+    log, to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Decimal, Env, Extern,
+    FullDelegation, HandleResponse, HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage,
+    StdError, StdResult, Storage, Uint128, Validator,
 };
 
 use crate::msg::{
@@ -11,12 +11,20 @@ use crate::msg::{
     ResponseStatus::Success,
 };
 use crate::rand::sha_256;
+use sha2::{Digest, Sha256};
+
+use rand::distributions::WeightedIndex;
+use rand::prelude::*;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaChaRng;
+
 use crate::receiver::Snip20ReceiveMsg;
-use crate::staking::{stake, withdraw_to_self};
+use crate::staking::{stake, withdraw_to_self, withdraw_to_winner};
 use crate::state::{
-    get_receiver_hash, get_transfers, get_txs, read_allowance, read_viewing_key, set_receiver_hash,
-    store_burn, store_deposit, store_mint, store_redeem, store_transfer, write_allowance,
-    write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig,
+    get_receiver_hash, get_transfers, get_txs, log_string, log_string_read, lottery, lottery_read,
+    read_allowance, read_viewing_key, set_receiver_hash, store_burn, store_deposit, store_mint,
+    store_redeem, store_transfer, write_allowance, write_viewing_key, Balances, Config, Constants,
+    Lottery, ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY,
 };
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
@@ -67,7 +75,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     if msg.decimals > 39 {
         return Err(StdError::generic_err("Decimals must not exceed 39"));
     }
-    let admin = msg.admin.unwrap_or_else(|| env.message.sender);
+    let admin = msg.admin.unwrap_or_else(|| env.message.sender.clone());
 
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
 
@@ -80,6 +88,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         prng_seed: prng_seed_hashed.to_vec(),
         total_supply_is_public: init_config.public_total_supply(),
         deposit_is_enabled: init_config.deposit_enabled(),
+        transfer_is_enabled: init_config.transfer_enabled(),
         redeem_is_enabled: init_config.redeem_enabled(),
         mint_is_enabled: init_config.mint_enabled(),
         burn_is_enabled: init_config.burn_enabled(),
@@ -95,7 +104,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
 
     // ensure the validator is registered
     let vals = deps.querier.query_validators()?;
-    let human_addr_wrap = HumanAddr(init_config.validator());
+    let human_addr_wrap = HumanAddr(init_config.validator().clone());
     if !vals.iter().any(|v| v.address == human_addr_wrap) {
         return Err(StdError::generic_err(format!(
             "{} is not in the current validator set",
@@ -104,9 +113,23 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     }
 
     let mut valset = ValidatorSet::default();
-    valset.add(init_config.validator());
+    valset.add((init_config.validator()));
 
     set_validator_set(&mut deps.storage, &valset)?;
+
+    let height = env.block.height;
+
+    //Create first lottery
+    let a_lottery = Lottery {
+        entries: Vec::default(),
+        entropy: prng_seed_hashed.to_vec(),
+        start_height: height + 100,
+        end_height: height + 200,
+        seed: prng_seed_hashed.to_vec(),
+    };
+
+    // Save to state
+    lottery(&mut deps.storage).save(&a_lottery)?;
 
     Ok(InitResponse::default())
 }
@@ -243,6 +266,14 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
 
 pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryMsg) -> QueryResult {
     match msg {
+        QueryMsg::LotteryInfo {} => {
+            // query_lottery_info(&deps.storage)
+            let lottery = lottery_read(&deps.storage).load()?;
+            to_binary(&QueryAnswer::LotteryInfo {
+                start_height: lottery.start_height,
+                end_height: lottery.end_height,
+            })
+        }
         QueryMsg::TokenInfo {} => query_token_info(&deps.storage),
         QueryMsg::TokenConfig {} => query_token_config(&deps.storage),
         QueryMsg::ExchangeRate {} => query_exchange_rate(&deps.storage),
@@ -336,6 +367,14 @@ fn query_token_info<S: ReadonlyStorage>(storage: &S) -> QueryResult {
         total_supply,
     })
 }
+
+// fn query_lottery_info<S: Storage>(storage: &S) -> QueryResult {
+//     let lottery = lottery_read(&storage).load()?;
+//     to_binary(&QueryAnswer::LotteryInfo {
+//         start_height: lottery.start_height,
+//         end_height: lottery.end_height
+//     })
+// }
 
 fn query_token_config<S: ReadonlyStorage>(storage: &S) -> QueryResult {
     let config = ReadonlyConfig::from_storage(storage);
@@ -545,25 +584,65 @@ fn set_contract_status<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+// claims the rewards to a random winner
 fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
 ) -> StdResult<HandleResponse> {
-    let config = Config::from_storage(&mut deps.storage);
-
+    let mut config = Config::from_storage(&mut deps.storage);
     check_if_admin(&config, &env.message.sender)?;
 
-    let mut validator_set = get_validator_set(&deps.storage)?;
+    // this way every time we call the claim_rewards function we will get a different result.
+    // Plus it's going to be pretty hard to predict the exact time of the block, so less chance of cheating
+
+    let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
+
+    let mut lottery = lottery(&mut deps.storage).load()?;
+    lottery.entropy.extend(&env.block.height.to_be_bytes());
+    lottery.entropy.extend(&env.block.time.to_be_bytes());
+
+    let entry_iter = &lottery.entries.clone();
+    let weight_iter = &lottery.entries.clone();
+    let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
+    let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
+
+    log_string(&mut deps.storage).save(&format!("Number of entries = {}", &weights.len()))?;
+
+    let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
+
+    let prng_seed = constants.prng_seed;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&prng_seed);
+    hasher.update(&lottery.entropy);
+    let hash = hasher.finalize();
+
+    let mut result = [0u8; 32];
+    result.copy_from_slice(hash.as_slice());
+
+    let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
+    let dist = WeightedIndex::new(&weights).unwrap();
+
+    let sample = dist.sample(&mut rng).clone();
+    let winner = entries[sample];
 
     let mut messages: Vec<CosmosMsg> = vec![];
 
-    messages.push(withdraw_to_self(&validator));
+    let winner_human = &deps.api.human_address(&winner.clone()).unwrap();
+    log_string(&mut deps.storage).save(&format!("And the winner is {}", winner_human.as_str()))?;
+
+    messages.push(withdraw_to_winner(&validator, &winner_human.clone()));
+
+    let logs = vec![log("winner", winner_human.as_str())];
 
     let res = HandleResponse {
         messages,
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::ClaimRewards { status: Success })?),
+        log: logs,
+        data: Some(to_binary(&HandleAnswer::ClaimRewards {
+            status: Success,
+            winner: winner_human.clone(),
+        })?),
     };
 
     Ok(res)
@@ -650,6 +729,20 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
         memo,
     )?;
 
+    // update lottery entries
+    let mut a_lottery = lottery(&mut deps.storage).load()?;
+    if a_lottery.entries.len() > 0 {
+        &a_lottery.entries.retain(|(k, _)| k != &sender_address);
+    }
+    &a_lottery.entries.push((
+        sender_address.clone(),
+        Uint128::from(account_balance + amount),
+    ));
+
+    &a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
+    lottery(&mut deps.storage).save(&a_lottery);
+
     let mut messages: Vec<CosmosMsg> = vec![];
 
     let mut validator_set = get_validator_set(&deps.storage)?;
@@ -703,6 +796,17 @@ fn try_redeem<S: Storage, A: Api, Q: Querier>(
             account_balance, amount_raw
         )));
     }
+
+    // update lottery entries
+    let mut lottery = lottery(&mut deps.storage).load()?;
+    &lottery.entries.retain(|(k, _)| k != &sender_address);
+    if account_balance > 0 {
+        &lottery
+            .entries
+            .push((sender_address.clone(), Uint128::from(account_balance)));
+    }
+    lottery.entropy.extend(&env.block.height.to_be_bytes());
+    lottery.entropy.extend(&env.block.time.to_be_bytes());
 
     let token_reserve = deps
         .querier
@@ -827,6 +931,13 @@ fn try_send<S: Storage, A: Api, Q: Querier>(
     msg: Option<Binary>,
     memo: Option<String>,
 ) -> StdResult<HandleResponse> {
+    let constants = Config::from_storage(&mut deps.storage).constants()?;
+    if !constants.transfer_is_enabled {
+        return Err(StdError::generic_err(
+            "Send functionality is not enabled for this token.",
+        ));
+    }
+
     let sender = env.message.sender.clone();
     try_transfer_impl(deps, env, recipient, amount, memo)?;
 
@@ -1343,16 +1454,21 @@ fn is_valid_symbol(symbol: &str) -> bool {
             .all(|byte| (byte >= b'A' && byte <= b'Z') || (b'0' <= byte && byte <= b'9'))
 }
 
+// pub fn migrate<S: Storage, A: Api, Q: Querier>(
+//     _deps: &mut Extern<S, A, Q>,
+//     _env: Env,
+//     _msg: MigrateMsg,
+// ) -> StdResult<MigrateResponse> {
+//     Ok(MigrateResponse::default())
+// }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::msg::ResponseStatus;
     use crate::msg::{InitConfig, InitialBalance};
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{
-        from_binary, BlockInfo, ContractInfo, Decimal, FullDelegation, MessageInfo, QueryResponse,
-        Validator, WasmMsg,
-    };
+    use cosmwasm_std::{from_binary, BlockInfo, ContractInfo, MessageInfo, QueryResponse, WasmMsg};
     use std::any::Any;
 
     // Helper functions
@@ -1443,6 +1559,31 @@ mod tests {
         deps
     }
 
+    /// Will return a ViewingKey only for the first account in `initial_balances`
+    fn auth_query_helper(
+        initial_balances: Vec<InitialBalance>,
+    ) -> (ViewingKey, Extern<MockStorage, MockApi, MockQuerier>) {
+        let (init_result, mut deps) = init_helper(initial_balances.clone());
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let account = initial_balances[0].address.clone();
+        let create_vk_msg = HandleMsg::CreateViewingKey {
+            entropy: "42".to_string(),
+            padding: None,
+        };
+        let handle_response = handle(&mut deps, mock_env(account.0, &[]), create_vk_msg).unwrap();
+        let vk = match from_binary(&handle_response.data.unwrap()).unwrap() {
+            HandleAnswer::CreateViewingKey { key } => key,
+            _ => panic!("Unexpected result from handle"),
+        };
+
+        (vk, deps)
+    }
+
     fn extract_error_msg<T: Any>(error: StdResult<T>) -> String {
         match error {
             Ok(response) => {
@@ -1481,7 +1622,7 @@ mod tests {
             | HandleAnswer::SetMinters { status }
             | HandleAnswer::AddMinters { status }
             | HandleAnswer::RemoveMinters { status } => {
-                matches!(status, ResponseStatus::Success { .. })
+                matches!(status, ResponseStatus::Success {..})
             }
             _ => panic!("HandleAnswer not supported for success extraction"),
         }
@@ -1492,7 +1633,7 @@ mod tests {
     #[test]
     fn test_init_sanity() {
         let init_amt = 10000000;
-        let deps = init_helper_with_config(
+        let mut deps = init_helper_with_config(
             vec![InitialBalance {
                 address: HumanAddr("bob".to_string()),
                 amount: Uint128(init_amt),
@@ -1669,7 +1810,6 @@ mod tests {
             code_hash: "this_is_a_hash_of_a_code".to_string(),
             padding: None,
         };
-
         let handle_result = handle(
             &mut deps,
             mock_env(seg_addr.clone().to_string(), &[]),
@@ -2029,7 +2169,7 @@ mod tests {
         init_amount: u128,
         enable_burn: bool,
     ) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let deps = init_helper_with_config(
+        let mut deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2049,6 +2189,7 @@ mod tests {
     fn test_handle_burn_from_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
         let mut deps = handle_burn_from_setup(seg_addr.clone(), 5000000, false);
+
         let handle_msg = HandleMsg::BurnFrom {
             owner: seg_addr.clone(),
             amount: Uint128(25000000),
@@ -2357,10 +2498,7 @@ mod tests {
         );
 
         let contract_status = ReadonlyConfig::from_storage(&deps.storage).contract_status();
-        assert!(matches!(
-            contract_status,
-            ContractStatusLevel::StopAll { .. }
-        ));
+        assert!(matches!(contract_status, ContractStatusLevel::StopAll{..}));
     }
 
     fn handle_redeem_setup(
@@ -2369,7 +2507,7 @@ mod tests {
         contract_balance: u128,
         enable_redeem: bool,
     ) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let deps = init_helper_with_config(
+        let mut deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2414,6 +2552,7 @@ mod tests {
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env(seg_addr.to_string(), &[]), handle_msg);
+
         let error = extract_error_msg(handle_result);
         assert!(error.contains(
             "You are trying to redeem for more SCRT than the token has in its deposit reserve."
@@ -2449,7 +2588,7 @@ mod tests {
         init_amount: u128,
         enable_deposit: bool,
     ) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let deps = init_helper_with_config(
+        let mut deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2621,6 +2760,7 @@ mod tests {
     fn test_handle_mint_happy_path() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
         let mut deps = handle_mint_setup(seg_addr.clone(), 50000000, true);
+
         let supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
         let mint_amount: u128 = 100;
         let handle_msg = HandleMsg::Mint {
@@ -2629,6 +2769,7 @@ mod tests {
             memo: Some("Mint memo".to_string()),
             padding: None,
         };
+
         check_handle_result(handle(&mut deps, mock_env("admin", &[]), handle_msg));
 
         let new_supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
@@ -2879,6 +3020,7 @@ mod tests {
             0,
             "v".to_string(),
         );
+
         let mut deps_for_failure = init_helper_with_config(
             vec![InitialBalance {
                 address: HumanAddr("bob".to_string()),
@@ -2939,7 +3081,7 @@ mod tests {
         init_amount: u128,
         enable_mint: bool,
     ) -> Extern<MockStorage, MockApi, MockQuerier> {
-        let deps = init_helper_with_config(
+        let mut deps = init_helper_with_config(
             vec![InitialBalance {
                 address: addr,
                 amount: Uint128(init_amount),
@@ -2959,6 +3101,7 @@ mod tests {
     fn test_handle_remove_minters_disabled() {
         let seg_addr = HumanAddr("segfaultdoc".to_string());
         let mut deps = handle_mint_setup(seg_addr.clone(), 1000000, false);
+
         // try when mint disabled
         let handle_msg = HandleMsg::RemoveMinters {
             minters: vec![seg_addr.clone()],
@@ -3358,7 +3501,6 @@ mod tests {
         let init_supply = Uint128(5000000);
 
         let mut deps = mock_dependencies(20, &[]);
-
         deps.querier
             .update_staking("SECSEC", validators, delegations);
         let env = mock_env("instantiator", &[]);
