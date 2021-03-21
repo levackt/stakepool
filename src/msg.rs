@@ -54,7 +54,7 @@ pub struct InitConfig {
     /// default: False
     enable_burn: Option<bool>,
     /// Validator to stake with
-    validator: String
+    validator: String,
 }
 
 impl InitConfig {
@@ -82,7 +82,9 @@ impl InitConfig {
         self.enable_burn.unwrap_or(false)
     }
 
-    pub fn validator(&self) -> String { self.validator.clone() }
+    pub fn validator(&self) -> String {
+        self.validator.clone()
+    }
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -203,8 +205,7 @@ pub enum HandleMsg {
         level: ContractStatusLevel,
         padding: Option<String>,
     },
-    ClaimRewards {
-    },
+    ClaimRewards {},
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -286,7 +287,7 @@ pub enum HandleAnswer {
     },
     LotteryWinner {
         status: ResponseStatus,
-    }
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

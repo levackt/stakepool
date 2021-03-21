@@ -89,7 +89,7 @@ impl ValidatorSet {
 
     pub fn get_validator_address(&mut self) -> Option<&String> {
         if self.validators.is_empty() {
-            return None
+            return None;
         }
 
         // testing 1 validator
@@ -100,7 +100,7 @@ impl ValidatorSet {
     pub fn get_winner(&mut self) -> Option<&String> {
         // todo get entries
         if self.validators.is_empty() {
-            return None
+            return None;
         }
 
         // testing 1 validator
@@ -118,10 +118,7 @@ pub fn get_validator_set<S: Storage>(store: &S) -> StdResult<ValidatorSet> {
     Ok(record)
 }
 
-pub fn set_validator_set<S: Storage>(
-    store: &mut S,
-    validators: &ValidatorSet,
-) -> StdResult<()> {
+pub fn set_validator_set<S: Storage>(store: &mut S, validators: &ValidatorSet) -> StdResult<()> {
     let mut config_store = PrefixedStorage::new(CONFIG_KEY, store);
     let as_bytes = bincode2::serialize(validators)
         .map_err(|_| StdError::generic_err("Error packing validator set"))?;

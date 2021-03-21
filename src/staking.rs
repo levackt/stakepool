@@ -1,4 +1,8 @@
-use cosmwasm_std::{BondedRatioResponse, Coin, CosmosMsg, DistQuery, HumanAddr, InflationResponse, MintQuery, Querier, RewardsResponse, StakingMsg, StakingQuery, StdResult, Uint128, UnbondingDelegationsResponse, StdError};
+use cosmwasm_std::{
+    BondedRatioResponse, Coin, CosmosMsg, DistQuery, HumanAddr, InflationResponse, MintQuery,
+    Querier, RewardsResponse, StakingMsg, StakingQuery, StdError, StdResult, Uint128,
+    UnbondingDelegationsResponse,
+};
 
 pub fn get_locked_balance<Q: Querier>(
     querier: &Q,

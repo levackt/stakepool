@@ -1,13 +1,14 @@
-use std::any::type_name;
-use std::convert::TryFrom;
-use rust_decimal::prelude::*;
-use rust_decimal::Decimal;
 use cosmwasm_std::{
     Api, CanonicalAddr, Coin, HumanAddr, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, singleton, singleton_read,
-                       ReadonlySingleton, Singleton, bucket, bucket_read,
-                       Bucket, ReadonlyBucket};
+use cosmwasm_storage::{
+    bucket, bucket_read, singleton, singleton_read, Bucket, PrefixedStorage, ReadonlyBucket,
+    ReadonlyPrefixedStorage, ReadonlySingleton, Singleton,
+};
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
+use std::any::type_name;
+use std::convert::TryFrom;
 
 use secret_toolkit::{
     serialization::Json,
@@ -18,8 +19,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::msg::{status_level_to_u8, u8_to_status_level, ContractStatusLevel};
+use crate::utils::{bytes_to_u128, bytes_to_u32};
 use crate::viewing_key::ViewingKey;
-use crate::utils::{bytes_to_u32, bytes_to_u128};
 use serde::de::DeserializeOwned;
 
 pub static CONFIG_KEY: &[u8] = b"config";
@@ -42,7 +43,6 @@ pub const PREFIX_ALLOWANCES: &[u8] = b"allowances";
 pub const PREFIX_VIEW_KEY: &[u8] = b"viewingkey";
 pub const PREFIX_RECEIVERS: &[u8] = b"receivers";
 pub const VALIDATOR_SET_KEY: &[u8] = b"validator_set";
-
 
 // Note that id is a globally incrementing counter.
 // Since it's 64 bits long, even at 50 tx/s it would take
@@ -903,7 +903,6 @@ fn slice_to_u8(data: &[u8]) -> StdResult<u8> {
         ))
     }
 }
-
 
 /// Reads 4 byte storage value into u32
 /// Returns zero if key does not exist. Errors if data found that is not 4 bytes
