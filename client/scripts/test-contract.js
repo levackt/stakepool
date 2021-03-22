@@ -79,6 +79,33 @@ async function main() {
   const startDelegations = await getDelegationShares(stakingInit.contractAddress)
   console.log("Delegation shares: ", startDelegations);
 
+  //  create viewing key
+  const entropy = "Something random";
+
+  let handleMsg = { create_viewing_key: {entropy: entropy} };
+  console.log('Creating viewing key');
+  response = await client.execute(stakingInit.contractAddress, handleMsg);
+  console.log('response: ', response);
+
+  // Convert the UTF8 bytes to String, before parsing the JSON for the api key.
+  const apiKey = JSON.parse(fromUtf8(response.data)).create_viewing_key.key;
+
+  response = await client2.execute(stakingInit.contractAddress, handleMsg);
+  console.log('response: ', response);
+
+  // Convert the UTF8 bytes to String, before parsing the JSON for the api key.
+  const apiKey2 = JSON.parse(fromUtf8(response.data)).create_viewing_key.key;
+
+  // Query balance with the api key
+  const balanceQuery = {
+      balance: {
+          key: apiKey,
+          address: user1.address
+      }
+  };
+  let balance = await client.queryContractSmart(stakingInit.contractAddress, balanceQuery);
+  console.log('My token balance: ', balance);
+
   //  deposit stake
   const amount = 1000000
   const denom = "uscrt";
@@ -92,6 +119,16 @@ async function main() {
 
   result = await client.queryContractSmart(stakingInit.contractAddress, { token_info: {  } });
   console.log("token_info: ", result);
+
+  // query txs
+  result = await client.queryContractSmart(stakingInit.contractAddress, { transaction_history: {
+       address: user1.address,
+       key: apiKey,
+       page: 0,
+       page_size: 10,
+     }
+   });
+  console.log("txs: ", result.transaction_history.txs);
 
   // equal deposit from account2
   result = await client2.execute(stakingInit.contractAddress, {
@@ -121,6 +158,24 @@ async function main() {
   // contract should have the reward balance now
   console.log("Contract Account: ", await client.getAccount(stakingInit.contractAddress));
 
+  // check both accounts for a win tx
+  result = await client.queryContractSmart(stakingInit.contractAddress, { transaction_history: {
+       address: user1.address,
+       key: apiKey,
+       page: 0,
+       page_size: 10,
+     }
+   });
+  console.log("user1 txs: ", result.transaction_history.txs);
+
+  result = await client.queryContractSmart(stakingInit.contractAddress, { transaction_history: {
+       address: user2.address,
+       key: apiKey2,
+       page: 0,
+       page_size: 10,
+     }
+   });
+  console.log("user2 txs: ", result.transaction_history.txs);
 }
 
 main().then(

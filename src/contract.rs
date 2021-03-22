@@ -19,12 +19,12 @@ use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
 
 use crate::receiver::Snip20ReceiveMsg;
-use crate::staking::{stake, withdraw_to_self, withdraw_to_winner};
+use crate::staking::{stake, withdraw_to_self, withdraw_to_winner, get_rewards, };
 use crate::state::{
     get_receiver_hash, get_transfers, get_txs, log_string, log_string_read, lottery, lottery_read,
     read_allowance, read_viewing_key, set_receiver_hash, store_burn, store_deposit, store_mint,
     store_redeem, store_transfer, write_allowance, write_viewing_key, Balances, Config, Constants,
-    Lottery, ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY,
+    Lottery, ReadonlyBalances, ReadonlyConfig, VALIDATOR_SET_KEY, store_win
 };
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
@@ -634,7 +634,19 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     messages.push(withdraw_to_winner(&validator, &winner_human.clone()));
 
-    let logs = vec![log("winner", winner_human.as_str())];
+    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let logs = vec![
+        log("winner", winner_human.as_str()),
+        log("amount", &rewards.to_string()),
+    ];
+
+    store_win(
+        &mut deps.storage,
+        &winner,
+        rewards,
+        constants.symbol,
+        None,
+    )?;
 
     let res = HandleResponse {
         messages,
