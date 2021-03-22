@@ -83,6 +83,9 @@ pub enum TxAction {
         #[serde(skip_serializing_if = "Option::is_none")]
         burner: Option<HumanAddr>,
     },
+    Win {
+        winner: HumanAddr,
+    },
 }
 
 // Note that id is a globally incrementing counter.
@@ -147,6 +150,9 @@ impl Tx {
                     burner: bnr,
                 }
             }
+            TxAction::Win { winner } => StoredTxAction::Win {
+                winner: api.canonical_address(&winner)?,
+            }
         };
         let tx = StoredTx {
             id: self.id,
@@ -180,6 +186,9 @@ pub enum StoredTxAction {
     Burn {
         owner: CanonicalAddr,
         burner: Option<CanonicalAddr>,
+    },
+    Win {
+        winner: CanonicalAddr,
     },
 }
 
@@ -239,6 +248,9 @@ impl StoredTx {
                     owner: api.human_address(&owner)?,
                     burner: bnr,
                 }
+            }
+            StoredTxAction::Win { winner } => TxAction::Win {
+                winner: api.human_address(&winner)?,
             }
         };
         let tx = Tx {
@@ -398,6 +410,33 @@ pub fn store_mint<S: Storage>(
 
     append_tx(store, &tx, recipient)?;
     append_tx(store, &tx, minter)?;
+
+    Ok(())
+}
+
+pub fn store_win<S: Storage>(
+    store: &mut S,
+    winner: &CanonicalAddr,
+    amount: Uint128,
+    denom: String,
+    memo: Option<String>,
+) -> StdResult<()> {
+    let mut config = Config::from_storage(store);
+    let id = config.tx_count() + 1;
+    config.set_tx_count(id)?;
+
+    let coins = Coin { denom, amount };
+    let action = StoredTxAction::Win {
+        winner: winner.clone(),
+    };
+    let tx = StoredTx {
+        id,
+        action,
+        coins,
+        memo,
+    };
+
+    append_tx(store, &tx, winner)?;
 
     Ok(())
 }
