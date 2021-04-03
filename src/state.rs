@@ -580,6 +580,7 @@ pub struct Lottery {
     pub entries: Vec<(CanonicalAddr, Uint128)>,
     pub entropy: Vec<u8>,
     pub seed: Vec<u8>,
+    pub duration: u64,
     pub start_height: u64,
     pub end_height: u64,
 }

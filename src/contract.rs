@@ -119,13 +119,16 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
 
     let height = env.block.height;
 
+    let duration = 10u64;
+
     //Create first lottery
     let a_lottery = Lottery {
         entries: Vec::default(),
         entropy: prng_seed_hashed.to_vec(),
-        start_height: height + 100,
-        end_height: height + 200,
+        start_height: height + 1,
+        end_height: height + duration + 1,
         seed: prng_seed_hashed.to_vec(),
+        duration
     };
 
     // Save to state
@@ -589,8 +592,6 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
 ) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-    check_if_admin(&config, &env.message.sender)?;
 
     // this way every time we call the claim_rewards function we will get a different result.
     // Plus it's going to be pretty hard to predict the exact time of the block, so less chance of cheating
@@ -598,12 +599,20 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
 
-    let mut lottery = lottery(&mut deps.storage).load()?;
-    lottery.entropy.extend(&env.block.height.to_be_bytes());
-    lottery.entropy.extend(&env.block.time.to_be_bytes());
+    let mut a_lottery = lottery(&mut deps.storage).load()?;
+    validate_end_height(a_lottery.end_height, env.clone())?;
+    validate_start_height(a_lottery.start_height, env.clone())?;
 
-    let entry_iter = &lottery.entries.clone();
-    let weight_iter = &lottery.entries.clone();
+    a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    a_lottery.entropy.extend(&env.block.time.to_be_bytes());
+
+    // restart the lottery in the next block
+    a_lottery.start_height = &env.block.height + 1;
+    a_lottery.end_height = &env.block.height + a_lottery.duration + 1;
+    lottery(&mut deps.storage).save(&a_lottery)?;
+
+    let entry_iter = &a_lottery.entries.clone();
+    let weight_iter = &a_lottery.entries.clone();
     let entries: Vec<_> = entry_iter.into_iter().map(|(k, _)| k).collect();
     let weights: Vec<_> = weight_iter.into_iter().map(|(_, v)| v.u128()).collect();
 
@@ -615,7 +624,7 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     let mut hasher = Sha256::new();
     hasher.update(&prng_seed);
-    hasher.update(&lottery.entropy);
+    hasher.update(&a_lottery.entropy);
     let hash = hasher.finalize();
 
     let mut result = [0u8; 32];
@@ -1466,13 +1475,23 @@ fn is_valid_symbol(symbol: &str) -> bool {
             .all(|byte| (byte >= b'A' && byte <= b'Z') || (b'0' <= byte && byte <= b'9'))
 }
 
-// pub fn migrate<S: Storage, A: Api, Q: Querier>(
-//     _deps: &mut Extern<S, A, Q>,
-//     _env: Env,
-//     _msg: MigrateMsg,
-// ) -> StdResult<MigrateResponse> {
-//     Ok(MigrateResponse::default())
-// }
+/// validate_end_height returns an error if the lottery ends in the future
+fn validate_end_height(end_height: u64, env: Env) -> StdResult<()> {
+    if env.block.height < end_height {
+        Err(StdError::generic_err("Lottery end height is in the future"))
+    } else {
+        Ok(())
+    }
+}
+
+/// validate_start_height returns an error if the lottery hasn't started
+fn validate_start_height(start_height: u64, env: Env) -> StdResult<()> {
+    if env.block.height < start_height {
+        Err(StdError::generic_err("Lottery start height is in the future"))
+    } else {
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
