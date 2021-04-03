@@ -53,9 +53,9 @@ async function main() {
     "prng_seed": Buffer.from("hello world").toString('base64'),
     "validator": validator,
     "config": {
-      "public_total_supply":true,
+      "public_total_supply":false,
       "enable_deposit":true,
-      "enable_redeem":false,
+      "enable_redeem":true,
       "enable_mint":true,
       "enable_burn":false,
       "validator": validator
@@ -143,7 +143,7 @@ async function main() {
 
   let blockHeight = await (await client.getBlock()).header.height
 
-  const rewardBlock = blockHeight + 2;
+  const rewardBlock = blockHeight + 12;
   while (blockHeight < rewardBlock) {
     await sleep(6000)
     blockHeight = await (await client.getBlock()).header.height
