@@ -577,7 +577,7 @@ pub struct Constants {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Lottery {
-    pub entries: Vec<(CanonicalAddr, Uint128)>,
+    pub entries: Vec<(CanonicalAddr, Uint128,u64)>,
     pub entropy: Vec<u8>,
     pub seed: Vec<u8>,
     pub duration: u64,
