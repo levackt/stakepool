@@ -1,12 +1,10 @@
 use cosmwasm_std::{
     Api, CanonicalAddr, Coin, HumanAddr, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
-use cosmwasm_storage::{
-    bucket, bucket_read, singleton, singleton_read, Bucket, PrefixedStorage, ReadonlyBucket,
+use cosmwasm_storage::{singleton, singleton_read, PrefixedStorage,
     ReadonlyPrefixedStorage, ReadonlySingleton, Singleton,
 };
-use rust_decimal::prelude::*;
-use rust_decimal::Decimal;
+// use rust_decimal::Decimal;
 use std::any::type_name;
 use std::convert::TryFrom;
 
@@ -577,7 +575,7 @@ pub struct Constants {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Lottery {
-    pub entries: Vec<(CanonicalAddr, Uint128)>,
+    pub entries: Vec<(CanonicalAddr, Uint128,u64)>,
     pub entropy: Vec<u8>,
     pub seed: Vec<u8>,
     pub duration: u64,
@@ -783,7 +781,7 @@ impl<'a, S: ReadonlyStorage> ReadonlyConfigImpl<'a, S> {
         get_bin_data(self.0, KEY_ENTROPY).unwrap()
     }
 
-    fn entries(&self) -> Vec<(CanonicalAddr, Uint128)> {
+    fn entries(&self) -> Vec<(CanonicalAddr, Uint128,u64)> {
         get_bin_data(self.0, KEY_ENTRIES).unwrap()
     }
 
