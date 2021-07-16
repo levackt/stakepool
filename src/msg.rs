@@ -110,28 +110,7 @@ pub enum HandleMsg {
     },
 
     // Base ERC-20 stuff
-    Transfer {
-        recipient: HumanAddr,
-        amount: Uint128,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    Send {
-        recipient: HumanAddr,
-        amount: Uint128,
-        msg: Option<Binary>,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    Burn {
-        amount: Uint128,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    RegisterReceive {
-        code_hash: String,
-        padding: Option<String>,
-    },
+
     CreateViewingKey {
         entropy: String,
         padding: Option<String>,
@@ -141,60 +120,7 @@ pub enum HandleMsg {
         padding: Option<String>,
     },
 
-    // Allowance
-    IncreaseAllowance {
-        spender: HumanAddr,
-        amount: Uint128,
-        expiration: Option<u64>,
-        padding: Option<String>,
-    },
-    DecreaseAllowance {
-        spender: HumanAddr,
-        amount: Uint128,
-        expiration: Option<u64>,
-        padding: Option<String>,
-    },
-    TransferFrom {
-        owner: HumanAddr,
-        recipient: HumanAddr,
-        amount: Uint128,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    SendFrom {
-        owner: HumanAddr,
-        recipient: HumanAddr,
-        amount: Uint128,
-        msg: Option<Binary>,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    BurnFrom {
-        owner: HumanAddr,
-        amount: Uint128,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
 
-    // Mint
-    Mint {
-        recipient: HumanAddr,
-        amount: Uint128,
-        memo: Option<String>,
-        padding: Option<String>,
-    },
-    AddMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
-    RemoveMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
-    SetMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
 
     // Admin
     ChangeAdmin {

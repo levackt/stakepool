@@ -1,5 +1,5 @@
 use crate::viewing_key::VIEWING_KEY_SIZE;
-use cosmwasm_std::{Binary, CosmosMsg, HumanAddr, StdError, StdResult, Uint128, WasmMsg};
+use cosmwasm_std::{StdError, StdResult};
 use sha2::{Digest, Sha256};
 use std::convert::TryInto;
 use std::str::FromStr;

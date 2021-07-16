@@ -29,7 +29,7 @@ overflow-checks = true
 [features]
 # for quicker tests, cargo test --lib
 # for more explicit tests, cargo test --features=backtraces
-backtraces = ["cosmwasm-std/backtraces", "cosmwasm-vm/backtraces"]
+backtraces = ["cosmwasm-std/backtraces"]
 
 [dependencies]
 cosmwasm-std = { git = "https://github.com/enigmampc/SecretNetwork", tag = "v1.0.0", features = ["staking"] }
@@ -50,5 +50,4 @@ rand = { version = "0.7.3" }
 sha2 = { version = "0.9.1", default-features = false }
 
 [dev-dependencies]
-cosmwasm-vm = { package = "cosmwasm-sgx-vm", git = "https://github.com/enigmampc/SecretNetwork", tag = "v1.0.0" }
 cosmwasm-schema = { version = "0.10.0" }
