@@ -182,7 +182,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     }
 
     let response = match msg {
-        // Native
+        // Stakepool's
         HandleMsg::Deposit { memo, .. } => try_deposit(deps, env, memo),
         HandleMsg::Redeem { amount, memo, .. } => try_redeem(deps, env, None, amount, memo),
         HandleMsg::RedeemTo {
@@ -191,6 +191,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             memo,
             ..
         } => try_redeem(deps, env, Some(recipient), amount, memo),
+        HandleMsg::ClaimRewards {} => claim_rewards(deps, env),
 
         // Base
         HandleMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, entropy),
@@ -200,8 +201,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::ChangeAdmin { address, .. } => change_admin(deps, env, address),
         HandleMsg::SetContractStatus { level, .. } => set_contract_status(deps, env, level),
 
-        // ClaimRewards
-        HandleMsg::ClaimRewards {} => claim_rewards(deps, env),
+
     };
 
     pad_response(response)
