@@ -554,23 +554,15 @@ pub fn get_txs<A: Api, S: ReadonlyStorage>(
 
 #[derive(Serialize, Debug, Deserialize, Clone, PartialEq, JsonSchema)]
 pub struct Constants {
-    pub name: String,
     pub admin: HumanAddr,
-    pub symbol: String,
-    pub decimals: u8,
+    pub denom: String,
     pub prng_seed: Vec<u8>,
     // privacy configuration
     pub total_supply_is_public: bool,
-    // is deposit enabled
     pub deposit_is_enabled: bool,
     // is redeem enabled
-    pub redeem_is_enabled: bool,
-    // is mint enabled
-    pub mint_is_enabled: bool,
-    // is burn enabled
-    pub burn_is_enabled: bool,
-    // is transfer enabled
-    pub transfer_is_enabled: bool,
+    pub withdraw_is_enabled: bool,
+
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -676,11 +668,11 @@ impl<'a, S: Storage> Config<'a, S> {
         set_bin_data(&mut self.storage, KEY_CONSTANTS, constants)
     }
 
-    pub fn total_supply(&self) -> u128 {
+    pub fn total_deposit(&self) -> u128 {
         self.as_readonly().total_supply()
     }
 
-    pub fn set_total_supply(&mut self, supply: u128) {
+    pub fn set_total_deposit(&mut self, supply: u128) {
         self.storage.set(KEY_TOTAL_SUPPLY, &supply.to_be_bytes());
     }
 

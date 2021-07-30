@@ -14,11 +14,8 @@ pub struct InitialBalance {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InitMsg {
-    pub name: String,
     pub admin: Option<HumanAddr>,
-    pub symbol: String,
-    pub decimals: u8,
-    pub initial_balances: Option<Vec<InitialBalance>>,
+    pub denom: String,
     pub prng_seed: Binary,
     pub config: Option<InitConfig>,
 }
@@ -37,24 +34,15 @@ impl InitMsg {
 pub struct InitConfig {
     /// Indicates whether the total supply is public or should be kept secret.
     /// default: False
-    public_total_supply: Option<bool>,
+    pub(crate) public_total_supply: Option<bool>,
     /// Indicates whether deposit functionality should be enabled
     /// default: False
-    enable_deposit: Option<bool>,
-    /// Indicates whether transfer functionality should be enabled
-    /// default: False
-    enable_transfer: Option<bool>,
+    pub(crate) enable_deposit: Option<bool>,
     /// Indicates whether redeem functionality should be enabled
     /// default: False
-    enable_redeem: Option<bool>,
-    /// Indicates whether mint functionality should be enabled
-    /// default: False
-    enable_mint: Option<bool>,
-    /// Indicates whether burn functionality should be enabled
-    /// default: False
-    enable_burn: Option<bool>,
-    /// Validator to stake with
-    validator: String,
+    pub(crate) enable_redeem: Option<bool>,
+
+    pub(crate) validator: String,
 }
 
 impl InitConfig {
@@ -66,21 +54,10 @@ impl InitConfig {
         self.enable_deposit.unwrap_or(false)
     }
 
-    pub fn transfer_enabled(&self) -> bool {
-        self.enable_transfer.unwrap_or(false)
-    }
-
     pub fn redeem_enabled(&self) -> bool {
         self.enable_redeem.unwrap_or(false)
     }
 
-    pub fn mint_enabled(&self) -> bool {
-        self.enable_mint.unwrap_or(false)
-    }
-
-    pub fn burn_enabled(&self) -> bool {
-        self.enable_burn.unwrap_or(false)
-    }
 
     pub fn validator(&self) -> String {
         self.validator.clone()
@@ -91,13 +68,12 @@ impl InitConfig {
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
     // Native coin interactions
-    Redeem {
+    Withdraw {
         amount: Uint128,
-        denom: Option<String>,
         memo: Option<String>,
         padding: Option<String>,
     },
-    RedeemTo {
+    WithdrawTo {
         recipient: HumanAddr,
         amount: Uint128,
         denom: Option<String>,
@@ -141,7 +117,7 @@ pub enum HandleAnswer {
     Deposit {
         status: ResponseStatus,
     },
-    Redeem {
+    Withdraw {
         status: ResponseStatus,
     },
 
@@ -220,47 +196,18 @@ pub enum HandleAnswer {
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
     LotteryInfo {},
-    TokenInfo {},
-    TokenConfig {},
-    ExchangeRate {},
-    Allowance {
-        owner: HumanAddr,
-        spender: HumanAddr,
-        key: String,
-    },
     Balance {
         address: HumanAddr,
         key: String,
     },
-    TransferHistory {
-        address: HumanAddr,
-        key: String,
-        page: Option<u32>,
-        page_size: u32,
-    },
-    TransactionHistory {
-        address: HumanAddr,
-        key: String,
-        page: Option<u32>,
-        page_size: u32,
-    },
-    Minters {},
+
 }
 
 impl QueryMsg {
     pub fn get_validation_params(&self) -> (Vec<&HumanAddr>, ViewingKey) {
         match self {
             Self::Balance { address, key } => (vec![address], ViewingKey(key.clone())),
-            Self::TransferHistory { address, key, .. } => (vec![address], ViewingKey(key.clone())),
-            Self::TransactionHistory { address, key, .. } => {
-                (vec![address], ViewingKey(key.clone()))
-            }
-            Self::Allowance {
-                owner,
-                spender,
-                key,
-                ..
-            } => (vec![owner, spender], ViewingKey(key.clone())),
+
             _ => panic!("This query type does not require authentication"),
         }
     }
@@ -280,11 +227,9 @@ pub enum QueryAnswer {
         total_supply: Option<Uint128>,
     },
     TokenConfig {
-        public_total_supply: bool,
         deposit_enabled: bool,
         redeem_enabled: bool,
-        mint_enabled: bool,
-        burn_enabled: bool,
+
     },
     ExchangeRate {
         rate: Uint128,
