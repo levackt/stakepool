@@ -16,16 +16,12 @@ use crate::msg::{
 use crate::rand::sha_256;
 use crate::receiver::Snip20ReceiveMsg;
 use crate::staking::{stake, withdraw_to_winner, get_rewards, undelegate};
-use crate::state::{
-    get_receiver_hash, log_string, lottery, lottery_read,
-    read_viewing_key, store_deposit, store_redeem,write_viewing_key,Config, Constants,
-    Lottery, ReadonlyBalances, ReadonlyConfig, store_win,
-};
+use crate::state::{get_receiver_hash, lottery, lottery_read, read_viewing_key, write_viewing_key, Config, Constants, Lottery, ReadonlyConfig, last_lottery_results, last_lottery_results_read, LastLotteryResults, RoundStruct, round, round_read};
 use crate::validator_set::{get_validator_set, set_validator_set, ValidatorSet};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
-use crate::types::UserInfo;
-
+use crate::types::{UserInfo, RequestedInfo, RewardPool};
+use crate::constants::*;
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
@@ -80,8 +76,29 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         duration,
     };
 
+    let last_lottery = LastLotteryResults{
+        winner: Default::default(),
+        winning_rewards: Uint128(0),
+        number_of_entries: Uint128(0)
+    };
+
+    last_lottery_results(&mut deps.storage).save(&last_lottery);
+
     // Save to state
     lottery(&mut deps.storage).save(&a_lottery)?;
+
+    let round_info = RoundStruct {
+        pending_staking_rewards: Uint128(0)
+    };
+    let _ =round(&mut deps.storage).save(&round_info);
+
+    TypedStoreMut::<RewardPool, S>::attach(&mut deps.storage).store(
+        REWARD_POOL_KEY,
+        &RewardPool {
+            total_tokens_staked: Uint128(0),
+            total_rewards_restaked: Uint128(0),
+        },
+    )?;
 
 
     Ok(InitResponse::default())
@@ -102,16 +119,9 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
                 HandleMsg::Withdraw { amount, memo, .. }
                 if contract_status == ContractStatusLevel::StopAllButRedeems =>
                     {
-                        try_withdraw(deps, env, None, amount, memo)
-                    }
-                HandleMsg::WithdrawTo {
-                    recipient,
-                    amount,
-                    memo,
-                    ..
-                } if contract_status == ContractStatusLevel::StopAllButRedeems => {
-                    try_withdraw(deps, env, Some(recipient), amount, memo)
-                }
+                        try_withdraw(deps, env, amount, memo)
+                    },
+
                 _ => Err(StdError::generic_err(
                     "This contract is stopped and this action is not allowed",
                 )),
@@ -126,14 +136,11 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     let response = match msg {
         // Stakepool's
         HandleMsg::Deposit { memo, .. } => try_deposit(deps, env, memo),
-        HandleMsg::Withdraw { amount, memo, .. } => try_withdraw(deps, env, None, amount, memo),
-        HandleMsg::WithdrawTo {
-            recipient,
-            amount,
-            memo,
-            ..
-        } => try_withdraw(deps, env, Some(recipient), amount, memo),
+        HandleMsg::Withdraw { amount, memo, .. } => try_withdraw(deps, env,  amount, memo),
+
         HandleMsg::ClaimRewards {} => claim_rewards(deps, env),
+
+        HandleMsg::TriggerWithdraw {amount,memo,..  }=>trigger_withdraw(deps, env,  amount, memo),
 
         // Base
         HandleMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, entropy),
@@ -147,7 +154,8 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     pad_response(response)
 }
 
-pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryMsg) -> QueryResult {
+pub fn query<S: Storage, A: Api, Q: Querier>
+(deps: &Extern<S, A, Q>, msg: QueryMsg) -> QueryResult {
     match msg {
         QueryMsg::LotteryInfo {} => {
             // query_lottery_info(&deps.storage)
@@ -179,7 +187,10 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
         } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
             return match msg {
                 // Base
-                QueryMsg::Balance { address, .. } => query_balance(&deps, &address),
+                QueryMsg::Balance { address,..}=>query_deposit(deps, &address),
+                // QueryMsg::AvailableForWithdrawl {address,..}=>query_available_tokens_for_withdrawl(deps,env,&address),
+
+
 
                 _ => panic!("This query type does not require authentication"),
             };
@@ -201,15 +212,55 @@ fn pad_response(response: StdResult<HandleResponse>) -> StdResult<HandleResponse
     })
 }
 
-pub fn query_balance<S: Storage, A: Api, Q: Querier>(
+fn query_deposit<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
-    account: &HumanAddr,
+    address: &HumanAddr,
 ) -> StdResult<Binary> {
-    let address = deps.api.canonical_address(account)?;
+    let user = TypedStore::attach(&deps.storage)
+        .load(address.0.as_bytes())
+        .unwrap_or(UserInfo {
+            amount_delegated: Default::default(),
+            start_height: 0,
+            requested_withdraw: RequestedInfo { amount: Uint128(0), time: 0 }
+        });
 
-    let amount = Uint128(ReadonlyBalances::from_storage(&deps.storage).account_amount(&address));
-    let response = QueryAnswer::Balance { amount };
-    to_binary(&response)
+    to_binary(&QueryAnswer::Balance {
+        amount: user.amount_delegated,
+    })
+}
+
+fn query_available_tokens_for_withdrawl<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+    env:Env,
+    address: &HumanAddr,
+) -> StdResult<Binary> {
+
+    let user = TypedStore::attach(&deps.storage)
+        .load(address.0.as_bytes())
+        .unwrap_or(UserInfo {
+            amount_delegated: Default::default(),
+            start_height: 0,
+            requested_withdraw: RequestedInfo { amount: Uint128(0), time: 0 }
+        });
+
+    if user.requested_withdraw.time + 1814400 <  env.block.time
+    {
+        return to_binary(&QueryAnswer::AvailableForWithdrawl {
+            amount: Uint128(0)
+        })
+    }
+
+    let contract_balance = deps.querier.query_balance(env.clone().contract.address, "uscrt").unwrap().amount;
+    if contract_balance<user.requested_withdraw.amount{
+        return to_binary(&QueryAnswer::AvailableForWithdrawl {
+            amount: Uint128(0)
+        })
+    }
+
+
+    to_binary(&QueryAnswer::AvailableForWithdrawl {
+        amount: user.amount_delegated,
+    })
 }
 
 
@@ -299,7 +350,6 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     // this way every time we call the claim_rewards function we will get a different result.
     // Plus it's going to be pretty hard to predict the exact time of the block, so less chance of cheating
-
     let mut validator_set = get_validator_set(&deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
 
@@ -324,54 +374,56 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
         }
     ).collect();
 
-
-    // log_string(&mut deps.storage).save(&format!("Number of entries = {}", &weights.len()))?;
-
     let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
-
     let prng_seed = constants.prng_seed;
-
     let mut hasher = Sha256::new();
     hasher.update(&prng_seed);
     hasher.update(&a_lottery.entropy);
     let hash = hasher.finalize();
-
     let mut result = [0u8; 32];
     result.copy_from_slice(hash.as_slice());
-
     let mut rng: ChaChaRng = ChaChaRng::from_seed(result);
     let dist = WeightedIndex::new(&weights).unwrap();
-
     let sample = dist.sample(&mut rng).clone();
     let winner = entries[sample];
 
+    //Querying pending_rewards send back from validator
+    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let mut newly_allocated_rewards = Uint128(0);
+    if rewards > Uint128(0) {
+        newly_allocated_rewards = rewards
+    }
+    let mut current_round: RoundStruct = round_read(&mut deps.storage).load()?;
+    let pending_staking_rewards = current_round.pending_staking_rewards;
+    current_round.pending_staking_rewards= Uint128(0);
+    let _=round(&mut deps.storage).save(&current_round);
+
+    let mut rewards_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
+    let redeeming_amount = reward_pool.total_rewards_restaked + newly_allocated_rewards;
+    let winning_amount = reward_pool.total_rewards_restaked + newly_allocated_rewards + pending_staking_rewards;
+
+    reward_pool.total_rewards_restaked =Uint128(0);
+    rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
+
+    if winning_amount == Uint128(0) {
+        return Err(StdError::generic_err(
+            "no rewards available",
+        ));
+    }
+
+
     let mut messages: Vec<CosmosMsg> = vec![];
-
     let winner_human = deps.api.human_address(&winner.clone()).unwrap();
-    // log_string(&mut deps.storage).save(&format!("And the winner is {}", winner_human.as_str()))?;
-
     messages.push(withdraw_to_winner(&validator, &winner_human.clone()));
 
-    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
-    let logs = vec![
-        log("winner", winner_human.as_str()),
-        log("amount", &rewards.to_string()),
-    ];
-    let rewards = Uint128(5000);
 
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(winner_human.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
-    user.available_tokens_for_withdrawl += rewards;
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
     TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(winner_human.0.as_bytes(), &user)?;
 
-    store_win(
-        &mut deps.storage,
-        &winner,
-        rewards,
-        constants.denom,
-        None,
-    )?;
+
 
     let res = HandleResponse {
         messages,
@@ -404,7 +456,6 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
             "Deposit functionality is not enabled for this token.",
         ));
     }
-
     let mut deposit_amount = Uint128::zero();
     for coin in &env.message.sent_funds {
         if coin.denom == "uscrt" {
@@ -416,48 +467,32 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
             ));
         }
     }
-
     if !valid_amount(deposit_amount) {
         return Err(StdError::generic_err(
             "Must deposit a minimum of 1000000 uscrt, or 1 scrt",
         ));
     }
 
+
+
+
+    //updating user data
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(env.message.sender.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
-
-    let mut config = Config::from_storage(&mut deps.storage);
-    let total_supply = config.total_deposit();
-
-    if let Some(total_deposit) = total_supply.checked_add(deposit_amount.0) {
-        config.set_total_deposit(total_deposit);
-    } else {
-        return Err(StdError::generic_err(
-            "This deposit would overflow the currency's total supply",
-        ));
-    }
-
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
     let sender_address = deps.api.canonical_address(&env.message.sender)?;
     let account_balance = user.amount_delegated.0;
     if let Some(account_balance) = account_balance.checked_add(deposit_amount.0) {
         user.start_height=env.block.height;
         user.amount_delegated = Uint128::from(account_balance);
         TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
-
     } else {
         return Err(StdError::generic_err(
             "This deposit would overflow your balance",
         ));
     }
 
-    store_deposit(
-        &mut deps.storage,
-        &sender_address,
-        deposit_amount,
-        "uscrt".to_string(),
-        memo,
-    )?;
+
 
     // update lottery entries
     let mut a_lottery = lottery(&mut deps.storage).load()?;
@@ -475,11 +510,32 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
     &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
     lottery(&mut deps.storage).save(&a_lottery);
 
-    let mut messages: Vec<CosmosMsg> = vec![];
+    let mut current_round: RoundStruct = round(&mut deps.storage).load()?;
+    let amount_to_stake = deposit_amount + current_round.pending_staking_rewards;
 
+    //Updating Rewards store
+    let rewards_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
+    reward_pool.total_tokens_staked += deposit_amount;
+    reward_pool.total_rewards_restaked +=current_round.pending_staking_rewards;
+    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
+
+    //Querying pending_rewards send back from validator
+    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let mut lp_pending_staking_rewards = Uint128(0);
+    if rewards > Uint128(0) {
+        lp_pending_staking_rewards = rewards
+    }
+
+    //Updating current_round pending rewards
+    current_round.pending_staking_rewards = lp_pending_staking_rewards;
+    let _=round(&mut deps.storage).save(&current_round);
+
+
+    let mut messages: Vec<CosmosMsg> = vec![];
     let mut validator_set = get_validator_set(&deps.storage)?;
-    let validator = validator_set.stake(deposit_amount.u128())?;
-    messages.push(stake(&validator, deposit_amount.u128()));
+    let validator = validator_set.stake(amount_to_stake.u128())?;
+    messages.push(stake(&validator, amount_to_stake.u128()));
 
 
     Ok(HandleResponse {
@@ -492,12 +548,15 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
 fn try_withdraw<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
-    redeem_to: Option<HumanAddr>,
-    amount: Uint128,
+    amount: Option<Uint128>,
     memo: Option<String>,
 ) -> StdResult<HandleResponse> {
     //loading configs from storage
-    let amount_raw = amount.u128();
+
+
+    let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
+        .load(env.message.sender.0.as_bytes())
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}  }); // NotFound is the only possible error
     let mut config = Config::from_storage(&mut deps.storage);
     let constants = config.constants()?;
     //Checking if the redeem functionality is enabled
@@ -506,79 +565,146 @@ fn try_withdraw<S: Storage, A: Api, Q: Querier>(
             "Redeem functionality is not enabled for this token.",
         ));
     }
+
+    if env.block.time<user.requested_withdraw.time+1814400{
+        return  Err(StdError::generic_err(format!(
+            "Your request cannot be completed. Please try again in {} hours ",((user.requested_withdraw.time+1814400-env.block.time)/3600),
+        )))
+    }
+    let withdraw_amount = amount.unwrap_or(user.requested_withdraw.amount);
+
+    let contract_balance = deps.querier.query_balance(env.clone().contract.address, "uscrt").unwrap().amount;
+
+
+    if withdraw_amount> contract_balance{
+        return Err(StdError::generic_err(" Contract balance not enough"))
+    }
+
+    // Subtracting from user's balance
+    let requested_withdraw_state = user.requested_withdraw.amount.0;
+
+    if let Some(_requested_withdraw) = requested_withdraw_state.checked_sub(withdraw_amount.0) {
+        user.requested_withdraw.amount= Uint128::from(_requested_withdraw);
+        TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
+    } else {
+        return Err(StdError::generic_err(format!(
+            "insufficient funds to withdraw: Contract balance={}, required={}",
+            contract_balance, withdraw_amount
+        )));
+    }
+
+
+    let mut messages: Vec<CosmosMsg> = vec![];
+    let withdrawl_coins: Vec<Coin> = vec![Coin {
+        denom: "uscrt".to_string(),
+        amount:withdraw_amount,
+    }];
+
+    messages.push(CosmosMsg::Bank(BankMsg::Send {
+        from_address: env.contract.address,
+        to_address: env.message.sender,
+        amount: withdrawl_coins,
+    }));
+
+
+
+    let res = HandleResponse {
+        messages:vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::Withdraw { status: Success })?),
+    };
+
+    Ok(res)
+}
+
+fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    amount: Option<Uint128>,
+    memo: Option<String>,
+) -> StdResult<HandleResponse> {
+
+
+    let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
+        .load(env.message.sender.0.as_bytes())
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}}); // NotFound is the only possible error
+
+    let withdraw_amount = amount.unwrap_or(user.amount_delegated).0;
+
+
+    //loading configs from storage
+    let mut config = Config::from_storage(&mut deps.storage);
+    let constants = config.constants()?;
+    //Checking if the redeem functionality is enabled
+    if !constants.withdraw_is_enabled {
+        return Err(StdError::generic_err(
+            "Redeem functionality is not enabled for this token.",
+        ));
+    }
+
+
+
     //Subtracting total supply of tokens given
-    let total_supply = config.total_deposit();
-    if let Some(total_supply) = total_supply.checked_sub(amount_raw) {
-        config.set_total_deposit(total_supply);
+    let rewards_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY).unwrap();
+
+    let total_supply = reward_pool.total_tokens_staked.0;
+    if let Some(total_supply) = total_supply.checked_sub(withdraw_amount) {
+        reward_pool.total_tokens_staked = Uint128::from(total_supply);
     } else {
         return Err(StdError::generic_err(
             "You are trying to redeem more tokens than what is available in the total supply",
         ));
     }
 
-    let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
-        .load(env.message.sender.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
-
-    //Subtracting from user's balance
-    let sender_address = deps.api.canonical_address(&env.message.sender)?;
-    let account_balance = user.amount_delegated.0;
-    if let Some(account_balance) = account_balance.checked_sub(amount_raw) {
+    //Subtracting from user's balance plus updating the lottery
+    let account_balance_state = user.amount_delegated.0;
+    if let Some(account_balance) = account_balance_state.checked_sub(withdraw_amount) {
         user.amount_delegated= Uint128::from(account_balance);
+        user.requested_withdraw.time=env.block.time;
+        user.requested_withdraw.amount= Uint128::from(withdraw_amount);
+        // updating lottery entries
+        let sender_address = deps.api.canonical_address(&env.message.sender)?;
+        let mut lottery = lottery(&mut deps.storage).load()?;
+        &lottery.entries.retain(|(k, _, _)| k != &sender_address);
+        if account_balance_state > 0 {
+            &lottery
+                .entries
+                .push((sender_address.clone(), Uint128::from(account_balance), user.start_height));
+        }
+        lottery.entropy.extend(&env.block.height.to_be_bytes());
+        lottery.entropy.extend(&env.block.time.to_be_bytes());
         TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
-
     } else {
         return Err(StdError::generic_err(format!(
             "insufficient funds to redeem: balance={}, required={}",
-            account_balance, amount_raw
+            account_balance_state, withdraw_amount
         )));
     }
 
-    // update lottery entries
-    let mut lottery = lottery(&mut deps.storage).load()?;
-    &lottery.entries.retain(|(k, _, _)| k != &sender_address);
-    if account_balance > 0 {
-        &lottery
-            .entries
-            .push((sender_address.clone(), Uint128::from(account_balance), env.block.height));
+    //Querying pending_rewards send back from validator
+    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let mut lp_pending_staking_rewards = Uint128(0);
+    if rewards > Uint128(0) {
+        lp_pending_staking_rewards = rewards
     }
-    lottery.entropy.extend(&env.block.height.to_be_bytes());
-    lottery.entropy.extend(&env.block.time.to_be_bytes());
+
+    let mut current_round: RoundStruct = round(&mut deps.storage).load()?;
+    current_round.pending_staking_rewards += lp_pending_staking_rewards;
+    let _=round(&mut deps.storage).save(&current_round);
+
+    //updating the reward pool
+    let mut rewards_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
+    reward_pool.total_tokens_staked =(reward_pool.total_tokens_staked- Uint128::from(withdraw_amount)).unwrap();
+    rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
 
     //Asking the validator to undelegate the funds
     let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
     let mut messages: Vec<CosmosMsg> = vec![];
-    messages.push(undelegate(&validator, amount_raw));
+    messages.push(undelegate(&validator, withdraw_amount));
 
-    let withdrawl_coins: Vec<Coin> = vec![Coin {
-        denom: "uscrt".to_string(),
-        amount,
-    }];
-    let recipient_raw: Option<CanonicalAddr>;
-    let recipient = if let Some(r) = redeem_to {
-        recipient_raw = Some(deps.api.canonical_address(&r)?);
-        r
-    } else {
-        recipient_raw = None;
-        env.message.sender
-    };
-
-    messages.push(CosmosMsg::Bank(BankMsg::Send {
-        from_address: env.contract.address,
-        to_address: recipient,
-        amount: withdrawl_coins,
-    }));
-
-
-    store_redeem(
-        &mut deps.storage,
-        &sender_address,
-        recipient_raw,
-        amount,
-        constants.denom,
-        memo,
-    )?;
 
     let res = HandleResponse {
         messages,
@@ -640,12 +766,15 @@ mod tests {
     use std::any::Any;
 
     // Helper functions
-    fn init_helper() -> (
+    fn init_helper(amount:Option<u64>) -> (
         StdResult<InitResponse>,
         Extern<MockStorage, MockApi, MockQuerier>,
     ) {
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("admin", &[], 1);
+        let mut deps = mock_dependencies(20, &[ Coin {
+            amount: Uint128(amount.unwrap_or(0) as u128),
+            denom: "uscrt".to_string(),
+        }]);
+        let env = mock_env("admin", &[], 1,0);
         let validator= "v".to_string();
 
         let init_config: InitConfig = from_binary(&Binary::from(
@@ -690,11 +819,11 @@ mod tests {
     }
 
 
-    pub fn mock_env<U: Into<HumanAddr>>(sender: U, sent: &[Coin], height: u64) -> Env {
+    pub fn mock_env<U: Into<HumanAddr>>(sender: U, sent: &[Coin], height: u64,time:u64) -> Env {
         Env {
             block: BlockInfo {
                 height,
-                time: 1_571_797_419,
+                time: time,
                 chain_id: "secret-testnet".to_string(),
             },
             message: MessageInfo {
@@ -712,87 +841,90 @@ mod tests {
     #[test]
     fn testing_deposit() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(1000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
         let env = mock_env("Rick",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(1000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Rick".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
-        let mut config = Config::from_storage(&mut deps.storage);
-        let total_deposit = config.total_deposit();
-        assert_eq!(total_deposit, 2000000);
+        let rewards_store = TypedStoreMut::attach(&mut deps.storage);
+        let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY).unwrap();
+        assert_eq!(reward_pool.total_tokens_staked, Uint128(2000000));
 
     }
 
     #[test]
     fn testing_withdraw() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(1000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(0),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Withdraw {
-            amount: Uint128(1000000),
+            amount: Some(Uint128(1000000)),
             memo: None,
             padding: None
         };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
-        assert_eq!(user.amount_delegated,Uint128(0));
+        assert_eq!(user.amount_delegated,Uint128(1000000));
 
-        let mut config = Config::from_storage(&mut deps.storage);
-        let total_deposit = config.total_deposit();
-        assert_eq!(total_deposit, 0);
+        let reward_store = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY);
+        let reward_pool:RewardPool = reward_store.unwrap();
+
+        assert_eq!(reward_pool.total_tokens_staked, Uint128(1000000));
 
     }
+
+
 
     #[test]
     fn testing_deposit_with_wrong_denom() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "bitcoin".to_string(),
             amount: Uint128(1000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
@@ -804,11 +936,11 @@ mod tests {
     #[test]
     fn testing_deposit_with_less_than_accepted_amount() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(999999),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
@@ -821,12 +953,12 @@ mod tests {
     #[test]
     fn testing_deposit_total_supply_overload() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
 
             amount: Uint128(100000000000000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
@@ -837,48 +969,97 @@ mod tests {
     #[test]
     fn testing_claim_rewards() {
         //1)Checking for errors
-        let (_init_result, mut deps) = init_helper();
+        let (_init_result, mut deps) = init_helper(None);
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(1000000),
-        }], 10);
+        }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
-        let mut config = Config::from_storage(&mut deps.storage);
-        let total_deposit = config.total_deposit();
-        assert_eq!(total_deposit, 1000000);
+
+        let reward_store = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY);
+        let reward_pool:RewardPool = reward_store.unwrap();
+        assert_eq!(reward_pool.total_tokens_staked, Uint128(1000000));
 
         let env = mock_env("xyz",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(0),
-        }], 22);
+        }], 22,0);
 
         let handlemsg= HandleMsg::ClaimRewards {
-
         };
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw: Uint128(0), available_tokens_for_withdrawl: Uint128(0) }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
-        assert_eq!(user.available_tokens_for_withdrawl,Uint128(5000));
 
         let mut a_lottery = lottery(&mut deps.storage).load().unwrap();
         assert_eq!(a_lottery.start_height,23);
 
 
-        let log_string = log_string(&mut deps.storage ).load();
-        println!("{:?}",log_string);
+        let last_lottery = last_lottery_results_read(&deps.storage).load().unwrap();
+        assert_eq!(last_lottery.winner,HumanAddr("Batman".to_string()));
 
 
+    }
+    #[test]
+    fn testing_trigger_withdraw() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(Some(1000000 as u64));
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+            amount: Uint128(1000000),
+        }], 10,0);
+        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+        let mut user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
+        assert_eq!(user.amount_delegated,Uint128(1000000));
+
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+            amount: Uint128(0),
+        }], 10,0);
+
+        let handlemsg= HandleMsg::TriggerWithdraw {
+            amount: Some(Uint128(1000000)),
+            memo: None,
+            padding: None
+        };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+        let mut user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+
+        assert_eq!(user.amount_delegated,Uint128(0));
+        assert_eq!(user.requested_withdraw.amount,Uint128(1000000));
+
+
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+            amount: Uint128(1000000),
+        }], 10,1814400);
+
+        let handlemsg= HandleMsg::Withdraw {
+            amount: None,
+            memo: None,
+            padding: None
+        };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+        let mut user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+        assert_eq!(user.requested_withdraw.amount,Uint128(0));
 
 
     }

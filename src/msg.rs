@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{Binary, HumanAddr, StdError, StdResult, Uint128};
 
-use crate::state::{LegacyTx, Tx};
 use crate::viewing_key::ViewingKey;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
@@ -69,14 +68,12 @@ impl InitConfig {
 pub enum HandleMsg {
     // Native coin interactions
     Withdraw {
-        amount: Uint128,
+        amount: Option<Uint128>,
         memo: Option<String>,
         padding: Option<String>,
     },
-    WithdrawTo {
-        recipient: HumanAddr,
-        amount: Uint128,
-        denom: Option<String>,
+    TriggerWithdraw{
+        amount: Option<Uint128>,
         memo: Option<String>,
         padding: Option<String>,
     },
@@ -200,6 +197,11 @@ pub enum QueryMsg {
         address: HumanAddr,
         key: String,
     },
+    AvailableForWithdrawl {
+        address:HumanAddr,
+        key:String
+    },
+
 
 }
 
@@ -220,42 +222,17 @@ pub enum QueryAnswer {
         start_height: u64,
         end_height: u64,
     },
-    TokenInfo {
-        name: String,
-        symbol: String,
-        decimals: u8,
-        total_supply: Option<Uint128>,
-    },
-    TokenConfig {
-        deposit_enabled: bool,
-        redeem_enabled: bool,
 
-    },
-    ExchangeRate {
-        rate: Uint128,
-        denom: String,
-    },
-    Allowance {
-        spender: HumanAddr,
-        owner: HumanAddr,
-        allowance: Uint128,
-        expiration: Option<u64>,
-    },
-    Balance {
-        amount: Uint128,
-    },
-    TransferHistory {
-        txs: Vec<LegacyTx>,
-    },
-    TransactionHistory {
-        txs: Vec<Tx>,
-    },
     ViewingKeyError {
         msg: String,
     },
-    Minters {
-        minters: Vec<HumanAddr>,
+    Balance{
+        amount: Uint128
     },
+    AvailableForWithdrawl{
+    amount:Uint128
+}
+
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
