@@ -11,7 +11,7 @@ pub struct RewardPool {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserInfo {
     pub amount_delegated: Uint128,
-    pub start_height:u64,
+    pub start_time:u64,
     //amount vs time of request
     pub requested_withdraw:RequestedInfo,
 }

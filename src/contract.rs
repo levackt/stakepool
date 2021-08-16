@@ -62,16 +62,16 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     valset.add(init_config.validator());
     set_validator_set(&mut deps.storage, &valset)?;
 
-    let height = env.block.height;
-    let duration = 10u64;
+    let time = env.block.time;
+    let duration = 600u64;
 
 
     //Create first lottery
     let a_lottery = Lottery {
         entries: Vec::default(),
         entropy: prng_seed_hashed.to_vec(),
-        start_height: height + 1,
-        end_height: height + duration + 1,
+        start_time: time + 1,
+        end_time: time + duration + 1,
         seed: prng_seed_hashed.to_vec(),
         duration,
     };
@@ -135,7 +135,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
 
     let response = match msg {
         // Stakepool's
-        HandleMsg::Deposit { memo, .. } => try_deposit(deps, env, memo),
+        HandleMsg::Deposit {  .. } => try_deposit(deps, env),
         HandleMsg::Withdraw { amount, memo, .. } => try_withdraw(deps, env,  amount, memo),
 
         HandleMsg::ClaimRewards {} => claim_rewards(deps, env),
@@ -161,8 +161,8 @@ pub fn query<S: Storage, A: Api, Q: Querier>
             // query_lottery_info(&deps.storage)
             let lottery = lottery_read(&deps.storage).load()?;
             to_binary(&QueryAnswer::LotteryInfo {
-                start_height: lottery.start_height,
-                end_height: lottery.end_height,
+                start_time: lottery.start_time,
+                end_time: lottery.end_time,
             })
         }
         _ => authenticated_queries(deps, msg),
@@ -220,7 +220,7 @@ fn query_deposit<S: Storage, A: Api, Q: Querier>(
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo {
             amount_delegated: Default::default(),
-            start_height: 0,
+            start_time: 0,
             requested_withdraw: RequestedInfo { amount: Uint128(0), time: 0 }
         });
 
@@ -239,7 +239,7 @@ fn query_available_tokens_for_withdrawl<S: Storage, A: Api, Q: Querier>(
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo {
             amount_delegated: Default::default(),
-            start_height: 0,
+            start_time: 0,
             requested_withdraw: RequestedInfo { amount: Uint128(0), time: 0 }
         });
 
@@ -354,26 +354,27 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let validator = validator_set.get_validator_address().unwrap();
 
     let mut a_lottery = lottery(&mut deps.storage).load()?;
-    validate_end_height(a_lottery.end_height, env.clone())?;
-    validate_start_height(a_lottery.start_height, env.clone())?;
+    validate_end_time(a_lottery.end_time, env.clone())?;
+    validate_start_time(a_lottery.start_time, env.clone())?;
 
-    a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    a_lottery.entropy.extend(&env.block.time.to_be_bytes());
     a_lottery.entropy.extend(&env.block.time.to_be_bytes());
 
-    // restart the lottery in the next block
-    a_lottery.start_height = &env.block.height + 1;
-    a_lottery.end_height = &env.block.height + a_lottery.duration + 1;
-    lottery(&mut deps.storage).save(&a_lottery)?;
-
-    let entries: Vec<_> = (&a_lottery.entries).into_iter().map(|(k, _, _)| k).collect();
-    let weights: Vec<u128> = (&a_lottery.entries).into_iter().map(|(_, v, deposit_height)|
-        if ((a_lottery.end_height - deposit_height) / a_lottery.duration) > 1 {
-            v.u128()
+    let entries: Vec<_> = (&a_lottery.entries).into_iter().map(|(Address, _, _)| Address).collect();
+    let weights: Vec<u128> = (&a_lottery.entries).into_iter().map(|(_, user_staked_amount, deposit_time)|
+        if ((a_lottery.end_time - deposit_time) / a_lottery.duration) >= 1 {
+            user_staked_amount.u128()
         } else {
-            v.u128() * ((a_lottery.end_height - deposit_height) / a_lottery.duration).to_u128().unwrap()
+            user_staked_amount.u128() * ((a_lottery.end_time - deposit_time) / a_lottery.duration).to_u128().unwrap()
         }
     ).collect();
 
+    // restart the lottery in the after
+    a_lottery.start_time = &env.block.time + 1;
+    a_lottery.end_time = &env.block.time + a_lottery.duration + 1;
+    lottery(&mut deps.storage).save(&a_lottery)?;
+
+    //Finding the winner
     let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
     let prng_seed = constants.prng_seed;
     let mut hasher = Sha256::new();
@@ -388,7 +389,8 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
     let winner = entries[sample];
 
     //Querying pending_rewards send back from validator
-    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    // let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let rewards = Uint128(1000);
     let mut newly_allocated_rewards = Uint128(0);
     if rewards > Uint128(0) {
         newly_allocated_rewards = rewards
@@ -400,7 +402,6 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
 
     let mut rewards_store = TypedStoreMut::attach(&mut deps.storage);
     let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
-    let redeeming_amount = reward_pool.total_rewards_restaked + newly_allocated_rewards;
     let winning_amount = reward_pool.total_rewards_restaked + newly_allocated_rewards + pending_staking_rewards;
 
     reward_pool.total_rewards_restaked =Uint128(0);
@@ -411,18 +412,17 @@ fn claim_rewards<S: Storage, A: Api, Q: Querier>(
             "no rewards available",
         ));
     }
-
-
     let mut messages: Vec<CosmosMsg> = vec![];
     let winner_human = deps.api.human_address(&winner.clone()).unwrap();
-    messages.push(withdraw_to_winner(&validator, &winner_human.clone()));
+    messages.push(undelegate(&validator, reward_pool.total_rewards_restaked));
 
 
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(winner_human.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+    user.requested_withdraw.amount=winning_amount;
+    user.requested_withdraw.time = env.block.time;
     TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(winner_human.0.as_bytes(), &user)?;
-
 
 
     let res = HandleResponse {
@@ -446,7 +446,7 @@ fn valid_amount(amt: Uint128) -> bool {
 fn try_deposit<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
-    memo: Option<String>,
+
 ) -> StdResult<HandleResponse> {
 
     //Checking the if the request could proceed.
@@ -474,17 +474,17 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
     }
 
 
-
-
     //updating user data
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(env.message.sender.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+
     let sender_address = deps.api.canonical_address(&env.message.sender)?;
     let account_balance = user.amount_delegated.0;
-    if let Some(account_balance) = account_balance.checked_add(deposit_amount.0) {
-        user.start_height=env.block.height;
-        user.amount_delegated = Uint128::from(account_balance);
+    let start_time = env.block.time;
+    if let Some(final_account_balance) = account_balance.checked_add(deposit_amount.0) {
+        user.start_time = start_time;
+        user.amount_delegated = Uint128::from(final_account_balance);
         TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
     } else {
         return Err(StdError::generic_err(
@@ -492,21 +492,19 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
         ));
     }
 
-
-
     // update lottery entries
     let mut a_lottery = lottery(&mut deps.storage).load()?;
     if a_lottery.entries.len() > 0 {
         &a_lottery.entries.retain(|(k, _, _)| k != &sender_address);
     }
-    let start_height = env.block.height;
+
     &a_lottery.entries.push((
         sender_address.clone(),
         Uint128::from(account_balance + deposit_amount.0),
-        start_height,
+        start_time,
     ));
 
-    &a_lottery.entropy.extend(&env.block.height.to_be_bytes());
+    &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
     &a_lottery.entropy.extend(&env.block.time.to_be_bytes());
     lottery(&mut deps.storage).save(&a_lottery);
 
@@ -521,12 +519,12 @@ fn try_deposit<S: Storage, A: Api, Q: Querier>(
     TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
 
     //Querying pending_rewards send back from validator
-    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    // let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let rewards = Uint128(1000);
     let mut lp_pending_staking_rewards = Uint128(0);
     if rewards > Uint128(0) {
         lp_pending_staking_rewards = rewards
     }
-
     //Updating current_round pending rewards
     current_round.pending_staking_rewards = lp_pending_staking_rewards;
     let _=round(&mut deps.storage).save(&current_round);
@@ -556,7 +554,7 @@ fn try_withdraw<S: Storage, A: Api, Q: Querier>(
 
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(env.message.sender.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}  }); // NotFound is the only possible error
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}  }); // NotFound is the only possible error
     let mut config = Config::from_storage(&mut deps.storage);
     let constants = config.constants()?;
     //Checking if the redeem functionality is enabled
@@ -571,13 +569,16 @@ fn try_withdraw<S: Storage, A: Api, Q: Querier>(
             "Your request cannot be completed. Please try again in {} hours ",((user.requested_withdraw.time+1814400-env.block.time)/3600),
         )))
     }
+
     let withdraw_amount = amount.unwrap_or(user.requested_withdraw.amount);
-
     let contract_balance = deps.querier.query_balance(env.clone().contract.address, "uscrt").unwrap().amount;
-
 
     if withdraw_amount> contract_balance{
         return Err(StdError::generic_err(" Contract balance not enough"))
+    }
+
+    if withdraw_amount> user.requested_withdraw.amount{
+        return Err(StdError::generic_err("Trying to withdraw more than requested"))
     }
 
     // Subtracting from user's balance
@@ -627,7 +628,7 @@ fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
 
     let mut user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(env.message.sender.0.as_bytes())
-        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}}); // NotFound is the only possible error
+        .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time}}); // NotFound is the only possible error
 
     let withdraw_amount = amount.unwrap_or(user.amount_delegated).0;
 
@@ -643,20 +644,6 @@ fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
     }
 
 
-
-    //Subtracting total supply of tokens given
-    let rewards_store = TypedStoreMut::attach(&mut deps.storage);
-    let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY).unwrap();
-
-    let total_supply = reward_pool.total_tokens_staked.0;
-    if let Some(total_supply) = total_supply.checked_sub(withdraw_amount) {
-        reward_pool.total_tokens_staked = Uint128::from(total_supply);
-    } else {
-        return Err(StdError::generic_err(
-            "You are trying to redeem more tokens than what is available in the total supply",
-        ));
-    }
-
     //Subtracting from user's balance plus updating the lottery
     let account_balance_state = user.amount_delegated.0;
     if let Some(account_balance) = account_balance_state.checked_sub(withdraw_amount) {
@@ -670,9 +657,9 @@ fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
         if account_balance_state > 0 {
             &lottery
                 .entries
-                .push((sender_address.clone(), Uint128::from(account_balance), user.start_height));
+                .push((sender_address.clone(), Uint128::from(account_balance), user.start_time));
         }
-        lottery.entropy.extend(&env.block.height.to_be_bytes());
+        lottery.entropy.extend(&env.block.time.to_be_bytes());
         lottery.entropy.extend(&env.block.time.to_be_bytes());
         TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
     } else {
@@ -683,7 +670,8 @@ fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
     }
 
     //Querying pending_rewards send back from validator
-    let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    // let rewards = get_rewards(&deps.querier, &env.contract.address).unwrap();
+    let rewards = Uint128(1000);
     let mut lp_pending_staking_rewards = Uint128(0);
     if rewards > Uint128(0) {
         lp_pending_staking_rewards = rewards
@@ -703,7 +691,7 @@ fn trigger_withdraw<S: Storage, A: Api, Q: Querier>(
     let mut validator_set = get_validator_set(&mut deps.storage)?;
     let validator = validator_set.get_validator_address().unwrap();
     let mut messages: Vec<CosmosMsg> = vec![];
-    messages.push(undelegate(&validator, withdraw_amount));
+    messages.push(undelegate(&validator, Uint128(withdraw_amount)));
 
 
     let res = HandleResponse {
@@ -738,19 +726,19 @@ fn check_if_admin<S: Storage>(config: &Config<S>, account: &HumanAddr) -> StdRes
 }
 
 
-/// validate_end_height returns an error if the lottery ends in the future
-fn validate_end_height(end_height: u64, env: Env) -> StdResult<()> {
-    if env.block.height < end_height {
-        Err(StdError::generic_err("Lottery end height is in the future"))
+/// validate_end_time returns an error if the lottery ends in the future
+fn validate_end_time(end_time: u64, env: Env) -> StdResult<()> {
+    if env.block.time <= end_time {
+        Err(StdError::generic_err("Lottery end time is in the future"))
     } else {
         Ok(())
     }
 }
 
-/// validate_start_height returns an error if the lottery hasn't started
-fn validate_start_height(start_height: u64, env: Env) -> StdResult<()> {
-    if env.block.height < start_height {
-        Err(StdError::generic_err("Lottery start height is in the future"))
+/// validate_start_time returns an error if the lottery hasn't started
+fn validate_start_time(start_time: u64, env: Env) -> StdResult<()> {
+    if env.block.time < start_time {
+        Err(StdError::generic_err("Lottery start time is in the future"))
     } else {
         Ok(())
     }
@@ -762,8 +750,8 @@ mod tests {
     use crate::msg::ResponseStatus;
     use crate::msg::{InitConfig, InitialBalance};
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{from_binary, QueryResponse, WasmMsg, Decimal, FullDelegation, Validator, BlockInfo, MessageInfo, ContractInfo, QuerierResult};
-    use std::any::Any;
+    use cosmwasm_std::{from_binary, QueryResponse, WasmMsg, Decimal, FullDelegation, Validator, BlockInfo, MessageInfo, ContractInfo, QuerierResult, DistQuery, RewardsResponse};
+    use std::convert::TryFrom;
 
     // Helper functions
     fn init_helper(amount:Option<u64>) -> (
@@ -838,82 +826,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn testing_deposit() {
-        //1)Checking for errors
+    fn deposit_helper_function() -> Extern<MockStorage, MockApi, MockQuerier> {
         let (_init_result, mut deps) = init_helper(None);
-        let env = mock_env("Batman",  &[Coin {
-            denom: "uscrt".to_string(),
-            amount: Uint128(1000000),
-        }], 10,0);
 
-        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
-        let response = handle(&mut deps, env.clone(), handlemsg);
-        let mut user = TypedStore::attach(&deps.storage)
-            .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
-        assert_eq!(user.amount_delegated,Uint128(1000000));
 
-        let env = mock_env("Rick",  &[Coin {
-            denom: "uscrt".to_string(),
-            amount: Uint128(1000000),
-        }], 10,0);
+        try_deposit(&mut deps, mock_env("Batman",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(1000000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Superman",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(2000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Spider-man",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(3000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Wonder-Women",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(4000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Thor",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(5000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Captain-America",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(2000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Ironman",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(3000000), }], 10,0));
+        try_deposit(&mut deps, mock_env("Loki",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(4000000), }], 10,0));
 
-        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
-        let response = handle(&mut deps, env.clone(), handlemsg);
-        let mut user = TypedStore::attach(&deps.storage)
-            .load("Rick".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+        return deps;
+    }
 
-        assert_eq!(user.amount_delegated,Uint128(1000000));
 
+    #[test]
+    fn testing_overall_deposit() {
+        let mut deps = deposit_helper_function();
+
+        //checking lottery
+        let mut a_lottery = lottery(&mut deps.storage).load().unwrap();
+        assert_eq!(a_lottery.entries.len(),8);
+
+        //checking reward store
         let rewards_store = TypedStoreMut::attach(&mut deps.storage);
         let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY).unwrap();
-        assert_eq!(reward_pool.total_tokens_staked, Uint128(2000000));
+        assert_eq!(reward_pool.total_tokens_staked,Uint128(1023000000));
+        assert_eq!(reward_pool.total_rewards_restaked,Uint128(7000));
+
+        //Current pending rewards
+        let mut current_round: RoundStruct = round(&mut deps.storage).load().unwrap();
+        assert_eq!(current_round.pending_staking_rewards,Uint128(1000))
+
+
 
     }
 
-    #[test]
-    fn testing_withdraw() {
-        //1)Checking for errors
-        let (_init_result, mut deps) = init_helper(None);
-        let env = mock_env("Batman",  &[Coin {
-            denom: "uscrt".to_string(),
-            amount: Uint128(1000000),
-        }], 10,0);
-
-        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
-        let response = handle(&mut deps, env.clone(), handlemsg);
-        let mut user = TypedStore::attach(&deps.storage)
-            .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
-
-        assert_eq!(user.amount_delegated,Uint128(1000000));
-
-        let env = mock_env("Batman",  &[Coin {
-            denom: "uscrt".to_string(),
-            amount: Uint128(0),
-        }], 10,0);
-
-        let handlemsg= HandleMsg::Withdraw {
-            amount: Some(Uint128(1000000)),
-            memo: None,
-            padding: None
-        };
-        let response = handle(&mut deps, env.clone(), handlemsg);
-        let mut user = TypedStore::attach(&deps.storage)
-            .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
-
-        assert_eq!(user.amount_delegated,Uint128(1000000));
-
-        let reward_store = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY);
-        let reward_pool:RewardPool = reward_store.unwrap();
-
-        assert_eq!(reward_pool.total_tokens_staked, Uint128(1000000));
-
-    }
 
 
 
@@ -957,11 +909,124 @@ mod tests {
         let env = mock_env("Batman",  &[Coin {
             denom: "uscrt".to_string(),
 
-            amount: Uint128(100000000000000000),
+            amount: Uint128(100000000000000000)
         }], 10,0);
 
         let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
         let response = handle(&mut deps, env.clone(), handlemsg);
+    }
+
+    #[test]
+    fn testing_deposit_user_data_update() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(None);
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+
+            //add one more zero and it will start giving error
+            amount: Uint128::try_from("100000000000000000000000000000000000000").unwrap()
+        }], 10,0);
+
+        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+
+
+        let user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo {
+                amount_delegated: Default::default(),
+                start_time: 0,
+                requested_withdraw: RequestedInfo { amount: Uint128(0), time: 0 }
+            });
+
+        assert_eq!(user.amount_delegated,Uint128::try_from("100000000000000000000000000000000000000").unwrap());
+        assert_eq!(user.start_time,0)
+    }
+
+    #[test]
+    fn testing_deposit_lottery_update() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(None);
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+
+            //add one more zero and it will start giving error
+            amount: Uint128::try_from("10000000").unwrap()
+        }], 10,0);
+
+        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+
+        let mut a_lottery = lottery(&mut deps.storage).load().unwrap();
+        assert_eq!(a_lottery.entries.len(),1)
+
+    }
+
+    #[test]
+    fn testing_deposit_rewards_store() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(None);
+
+
+        try_deposit(&mut deps, mock_env("Batman",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(10000000), }], 10,0));
+
+        let rewards_store = TypedStoreMut::attach(&mut deps.storage);
+        let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY).unwrap();
+        assert_eq!(reward_pool.total_tokens_staked,Uint128(10000000));
+        assert_eq!(reward_pool.total_rewards_restaked,Uint128(0))
+
+
+    }
+
+    #[test]
+    fn testing_deposit_current_round() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(None);
+        try_deposit(&mut deps, mock_env("Batman",  &[Coin { denom: "uscrt".to_string(), amount: Uint128(10000000), }], 10,0));
+        let mut current_round: RoundStruct = round(&mut deps.storage).load().unwrap();
+        assert_eq!(current_round.pending_staking_rewards,Uint128(1000))
+    }
+
+
+
+    #[test]
+    fn testing_withdraw() {
+        //1)Checking for errors
+        let (_init_result, mut deps) = init_helper(None);
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+            amount: Uint128(1000000),
+        }], 10,0);
+
+        let handlemsg= HandleMsg::Deposit { memo: Option::from("memo".to_string()), padding: None };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+        let mut user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+
+        assert_eq!(user.amount_delegated,Uint128(1000000));
+
+        let env = mock_env("Batman",  &[Coin {
+            denom: "uscrt".to_string(),
+            amount: Uint128(0),
+        }], 10,0);
+
+        let handlemsg= HandleMsg::Withdraw {
+            amount: Some(Uint128(1000000)),
+            memo: None,
+            padding: None
+        };
+        let response = handle(&mut deps, env.clone(), handlemsg);
+        let mut user = TypedStore::attach(&deps.storage)
+            .load("Batman".as_bytes())
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+
+        assert_eq!(user.amount_delegated,Uint128(1000000));
+
+        let reward_store = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY);
+        let reward_pool:RewardPool = reward_store.unwrap();
+
+        assert_eq!(reward_pool.total_tokens_staked, Uint128(1000000));
 
     }
 
@@ -979,7 +1044,7 @@ mod tests {
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
@@ -991,22 +1056,23 @@ mod tests {
         let env = mock_env("xyz",  &[Coin {
             denom: "uscrt".to_string(),
             amount: Uint128(0),
-        }], 22,0);
+        }], 22,602);
 
         let handlemsg= HandleMsg::ClaimRewards {
         };
         let response = handle(&mut deps, env.clone(), handlemsg);
+        // println!("{:?}",response.unwrap());
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
 
         let mut a_lottery = lottery(&mut deps.storage).load().unwrap();
-        assert_eq!(a_lottery.start_height,23);
+        assert_eq!(a_lottery.start_time, 603);
 
 
-        let last_lottery = last_lottery_results_read(&deps.storage).load().unwrap();
-        assert_eq!(last_lottery.winner,HumanAddr("Batman".to_string()));
+        // let last_lottery = last_lottery_results_read(&deps.storage).load().unwrap();
+        // assert_eq!(last_lottery.winner,HumanAddr("Batman".to_string()));
 
 
     }
@@ -1022,7 +1088,7 @@ mod tests {
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(1000000));
 
@@ -1039,7 +1105,7 @@ mod tests {
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
 
         assert_eq!(user.amount_delegated,Uint128(0));
         assert_eq!(user.requested_withdraw.amount,Uint128(1000000));
@@ -1058,12 +1124,11 @@ mod tests {
         let response = handle(&mut deps, env.clone(), handlemsg);
         let mut user = TypedStore::attach(&deps.storage)
             .load("Batman".as_bytes())
-            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_height: env.block.height, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
+            .unwrap_or(UserInfo { amount_delegated: Uint128(0), start_time: env.block.time, requested_withdraw:RequestedInfo{ amount: Uint128(0),time:env.block.time} }); // NotFound is the only possible error
         assert_eq!(user.requested_withdraw.amount,Uint128(0));
 
 
     }
-
 
 
 }

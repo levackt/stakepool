@@ -21,6 +21,7 @@ pub fn get_rewards<Q: Querier>(querier: &Q, contract: &HumanAddr) -> StdResult<U
         return Ok(Uint128(0));
     }
     let denom = query_rewards.total[0].denom.as_str();
+
     query_rewards.total.iter().fold(Ok(Uint128(0)), |racc, d| {
         let acc = racc?;
         if d.denom.as_str() != denom {
@@ -52,12 +53,12 @@ pub fn stake(validator: &String, amount: u128) -> CosmosMsg {
     })
 }
 
-pub fn undelegate(validator: &String, amount: u128) -> CosmosMsg {
+pub fn undelegate(validator: &String, amount: Uint128) -> CosmosMsg {
     CosmosMsg::Staking(StakingMsg::Undelegate {
         validator: HumanAddr(validator.clone()),
         amount: Coin {
             denom: "uscrt".to_string(),
-            amount: Uint128(amount),
+            amount: amount,
         },
     })
 }

@@ -219,8 +219,8 @@ impl QueryMsg {
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
     LotteryInfo {
-        start_height: u64,
-        end_height: u64,
+        start_time: u64,
+        end_time: u64,
     },
 
     ViewingKeyError {
